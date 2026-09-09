@@ -1,0 +1,6 @@
+{
+  "name": "Club Attendance Tracker",
+  "description": "Daily attendance check-in and check-out system for club members with real-time proxy detection alerts, admin monitoring, and CSV export.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

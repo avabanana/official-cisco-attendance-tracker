@@ -8,16 +8,26 @@ import {
   ChevronRight,
   Wifi,
   WifiOff,
+  Trophy,
+  Laptop,
+  Lock,
+  RotateCcw,
 } from 'lucide-react';
 
 interface NavbarProps {
-  activeTab: 'checkin' | 'admin';
-  setActiveTab: (tab: 'checkin' | 'admin') => void;
+  activeTab: 'checkin' | 'laptops' | 'admin';
+  setActiveTab: (tab: 'checkin' | 'laptops' | 'admin') => void;
   selectedDate: string;
   setSelectedDate: (date: string) => void;
   unreadAlertsCount: number;
   isConnected: boolean;
+  sessionLaptopsTotal?: number;
+  isAdminUnlocked?: boolean;
+  onResetDayClick?: () => void;
+  totalMembers?: number;
 }
+
+const PACIFIC_TIMEZONE = 'America/Los_Angeles';
 
 export const Navbar: React.FC<NavbarProps> = ({
   activeTab,
@@ -26,6 +36,10 @@ export const Navbar: React.FC<NavbarProps> = ({
   setSelectedDate,
   unreadAlertsCount,
   isConnected,
+  sessionLaptopsTotal,
+  isAdminUnlocked,
+  onResetDayClick,
+  totalMembers = 51,
 }) => {
   const [currentTime, setCurrentTime] = useState<string>('');
 
@@ -34,6 +48,7 @@ export const Navbar: React.FC<NavbarProps> = ({
       const now = new Date();
       setCurrentTime(
         now.toLocaleTimeString('en-US', {
+          timeZone: PACIFIC_TIMEZONE,
           hour: '2-digit',
           minute: '2-digit',
           second: '2-digit',
@@ -46,6 +61,15 @@ export const Navbar: React.FC<NavbarProps> = ({
     return () => clearInterval(timer);
   }, []);
 
+  const getTodayPacific = () => {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: PACIFIC_TIMEZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date());
+  };
+
   const changeDateBy = (days: number) => {
     const [y, m, d] = selectedDate.split('-').map(Number);
     const date = new Date(y, m - 1, d);
@@ -57,15 +81,11 @@ export const Navbar: React.FC<NavbarProps> = ({
   };
 
   const isToday = () => {
-    const now = new Date();
-    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    return selectedDate === todayStr;
+    return selectedDate === getTodayPacific();
   };
 
   const setToday = () => {
-    const now = new Date();
-    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    setSelectedDate(todayStr);
+    setSelectedDate(getTodayPacific());
   };
 
   return (
@@ -83,42 +103,24 @@ export const Navbar: React.FC<NavbarProps> = ({
                 <h1 className="text-lg font-bold text-slate-900 leading-tight flex items-center gap-2">
                   Club Attendance
                   <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-100">
-                    28 Members
+                    {totalMembers} Members
                   </span>
                 </h1>
-                <p className="text-xs text-slate-500 flex items-center gap-2">
-                  <span>Leader: Norgaard, Ava</span>
-                  <span className="text-slate-300">•</span>
-                  <span className="flex items-center gap-1 font-mono text-slate-600">
-                    <Clock className="w-3 h-3 text-slate-400" />
-                    {currentTime || 'Loading...'}
+                <div className="flex items-center gap-2 mt-0.5">
+                  <span className="flex items-center gap-1 font-mono text-xs text-slate-500" title="Current Pacific Time (PT)">
+                    <Clock className="w-3.5 h-3.5 text-slate-400" />
+                    <span>{currentTime || 'Loading...'}</span>
+                    <span className="text-[10px] font-semibold bg-slate-100 text-slate-500 px-1 py-0.2 rounded">PT</span>
                   </span>
-                </p>
+                  <span className="flex items-center gap-1 text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200" title="Firebase Firestore Cloud Backend Connected">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                    Firebase
+                  </span>
+                </div>
               </div>
             </div>
 
             {/* Mobile Connection Indicator */}
-            <div className="flex items-center md:hidden">
-              <span
-                className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full font-medium ${
-                  isConnected
-                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                    : 'bg-amber-50 text-amber-700 border border-amber-200'
-                }`}
-              >
-                {isConnected ? (
-                  <>
-                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                    Live
-                  </>
-                ) : (
-                  <>
-                    <WifiOff className="w-3 h-3 text-amber-600" />
-                    Syncing
-                  </>
-                )}
-              </span>
-            </div>
           </div>
 
           {/* Date Selector & Navigation Controls */}
@@ -161,61 +163,73 @@ export const Navbar: React.FC<NavbarProps> = ({
               )}
             </div>
 
+            {/* Red Reset Day Records Option */}
+            {onResetDayClick && (
+              <button
+                id="btn-navbar-reset-day"
+                type="button"
+                onClick={onResetDayClick}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 active:scale-95 text-rose-700 hover:text-rose-800 border border-rose-200 hover:border-rose-300 rounded-lg text-xs font-semibold shadow-2xs transition-all cursor-pointer"
+                title={`Reset all attendance and laptop records for ${selectedDate}`}
+              >
+                <RotateCcw className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                <span className="hidden sm:inline">Reset Day Records</span>
+                <span className="sm:hidden">Reset Day</span>
+              </button>
+            )}
+
             {/* View Switcher Tabs */}
             <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200 text-xs font-medium">
               <button
                 id="tab-btn-checkin"
                 onClick={() => setActiveTab('checkin')}
-                className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg transition-all ${
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
                   activeTab === 'checkin'
                     ? 'bg-white text-indigo-700 shadow-xs font-semibold'
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 <Users className="w-3.5 h-3.5" />
-                <span>Member Check-In</span>
+                <span>Check-In</span>
+              </button>
+              <button
+                id="tab-btn-laptops"
+                onClick={() => setActiveTab('laptops')}
+                className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
+                  activeTab === 'laptops'
+                    ? 'bg-white text-indigo-700 shadow-xs font-semibold'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Trophy className="w-3.5 h-3.5 text-amber-500" />
+                <span>Leadership Dashboard</span>
+                {sessionLaptopsTotal !== undefined && (
+                  <span className="flex items-center justify-center px-1.5 py-0.2 rounded-full bg-indigo-100 text-indigo-800 text-[10px] font-bold">
+                    {sessionLaptopsTotal}
+                  </span>
+                )}
               </button>
               <button
                 id="tab-btn-admin"
                 onClick={() => setActiveTab('admin')}
-                className={`relative flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg transition-all ${
+                className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
                   activeTab === 'admin'
                     ? 'bg-white text-indigo-700 shadow-xs font-semibold'
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                <ShieldAlert className="w-3.5 h-3.5" />
-                <span>Admin Dashboard</span>
-                {unreadAlertsCount > 0 && (
+                {isAdminUnlocked ? (
+                  <ShieldAlert className="w-3.5 h-3.5" />
+                ) : (
+                  <Lock className="w-3.5 h-3.5 text-slate-500" />
+                )}
+                <span>Admin</span>
+                {isAdminUnlocked && unreadAlertsCount > 0 && (
                   <span className="flex items-center justify-center min-w-[18px] h-[18px] px-1 bg-rose-500 text-white rounded-full text-[10px] font-bold animate-pulse">
                     {unreadAlertsCount}
                   </span>
                 )}
               </button>
-            </div>
-
-            {/* Desktop Real-Time Indicator */}
-            <div className="hidden md:flex items-center">
-              <span
-                className={`inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full font-medium ${
-                  isConnected
-                    ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                    : 'bg-amber-50 text-amber-700 border border-amber-200'
-                }`}
-                title={isConnected ? 'Connected to live server' : 'Reconnecting...'}
-              >
-                {isConnected ? (
-                  <>
-                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                    <span>Live Sync</span>
-                  </>
-                ) : (
-                  <>
-                    <WifiOff className="w-3.5 h-3.5 text-amber-600" />
-                    <span>Connecting</span>
-                  </>
-                )}
-              </span>
             </div>
 
           </div>

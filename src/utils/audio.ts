@@ -44,30 +44,7 @@ export function playSuccessChime() {
   }
 }
 
-// Subtle, non-jarring low alert for admin dashboard (e.g. proxy detection)
+// Subtle, non-jarring low alert for admin dashboard (disabled per user request)
 export function playAdminAlertChime() {
-  try {
-    const ctx = getAudioContext();
-    if (!ctx) return;
-
-    const now = ctx.currentTime;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-
-    osc.type = 'triangle';
-    osc.frequency.setValueAtTime(440, now); // A4
-    osc.frequency.setValueAtTime(370, now + 0.15); // F#4
-    osc.frequency.setValueAtTime(440, now + 0.3); // A4
-
-    gain.gain.setValueAtTime(0.15, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
-
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-
-    osc.start(now);
-    osc.stop(now + 0.46);
-  } catch {
-    // Graceful silence
-  }
+  // Silent: all audio chimes and popup notifications in admin panel are disabled
 }

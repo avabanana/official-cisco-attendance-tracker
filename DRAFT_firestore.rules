@@ -1,0 +1,136 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net: Default-deny all unspecified paths
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Global hardened security helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'avasophianorgaard@gmail.com';
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidDateFormat(d) {
+      return d is string && d.size() == 10 && d.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$');
+    }
+
+    function isValidAttendanceRecord(data) {
+      return data.keys().hasAll(['id', 'studentId', 'studentName', 'date', 'status'])
+        && isValidId(data.id)
+        && isValidId(data.studentId)
+        && data.studentName is string && data.studentName.size() > 0 && data.studentName.size() <= 128
+        && isValidDateFormat(data.date)
+        && (data.status == 'absent' || data.status == 'checked_in' || data.status == 'completed')
+        && (!('durationMinutes' in data) || (data.durationMinutes is number && data.durationMinutes >= 0 && data.durationMinutes <= 1440))
+        && (!('laptopsImaged' in data) || (data.laptopsImaged is number && data.laptopsImaged >= 0 && data.laptopsImaged <= 500))
+        && (!('isFlagged' in data) || data.isFlagged is bool)
+        && (!('flagReason' in data) || (data.flagReason == null || (data.flagReason is string && data.flagReason.size() <= 256)))
+        && (!('clockInTime' in data) || (data.clockInTime == null || (data.clockInTime is string && data.clockInTime.size() <= 64)))
+        && (!('clockOutTime' in data) || (data.clockOutTime == null || (data.clockOutTime is string && data.clockOutTime.size() <= 64)))
+        && (!('clockInTimestamp' in data) || (data.clockInTimestamp == null || data.clockInTimestamp is number))
+        && (!('clockOutTimestamp' in data) || (data.clockOutTimestamp == null || data.clockOutTimestamp is number));
+    }
+
+    function isValidStudent(data) {
+      return data.keys().hasAll(['id', 'name', 'lastName', 'firstName'])
+        && isValidId(data.id)
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 128
+        && data.lastName is string && data.lastName.size() > 0 && data.lastName.size() <= 128
+        && data.firstName is string && data.firstName.size() > 0 && data.firstName.size() <= 128
+        && (!('isCustom' in data) || data.isCustom is bool);
+    }
+
+    function isValidAlert(data) {
+      return data.keys().hasAll(['id', 'type', 'message', 'timestamp', 'date'])
+        && isValidId(data.id)
+        && (data.type == 'rapid_checkin' || data.type == 'post_415_checkout' || data.type == 'admin_reset' || data.type == 'admin_edit')
+        && data.message is string && data.message.size() > 0 && data.message.size() <= 500
+        && data.timestamp is number
+        && isValidDateFormat(data.date);
+    }
+
+    function isValidSettings(data) {
+      return data.keys().hasAll(['targetLaptops', 'sessionTarget'])
+        && data.targetLaptops is number && data.targetLaptops >= 0
+        && data.sessionTarget is number && data.sessionTarget >= 0
+        && (!('rapidThresholdSeconds' in data) || (data.rapidThresholdSeconds is number && data.rapidThresholdSeconds >= 0))
+        && (!('strictMode' in data) || data.strictMode is bool)
+        && (!('soundAlerts' in data) || data.soundAlerts is bool)
+        && (!('kioskMode' in data) || data.kioskMode is bool);
+    }
+
+    // Attendance Records Collection
+    match /attendance_records/{recordId} {
+      allow get: if isSignedIn() && isValidId(recordId);
+      allow list: if isSignedIn();
+
+      allow create: if isSignedIn()
+        && isValidId(recordId)
+        && request.resource.data.id == recordId
+        && isValidAttendanceRecord(request.resource.data)
+        && (isAdmin() || request.resource.data.status in ['absent', 'checked_in', 'completed']);
+
+      allow update: if isSignedIn()
+        && isValidId(recordId)
+        && isValidAttendanceRecord(request.resource.data)
+        && request.resource.data.id == resource.data.id
+        && request.resource.data.studentId == resource.data.studentId
+        && request.resource.data.date == resource.data.date
+        && (
+          isAdmin() ||
+          // Check-in action
+          (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'clockInTime', 'clockInTimestamp', 'checkedInByClientId', 'history', 'updatedAt'])) ||
+          // Check-out action
+          (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'clockOutTime', 'clockOutTimestamp', 'durationMinutes', 'isFlagged', 'flagReason', 'post415Exceeded', 'cutoffExceeded', 'checkedOutByClientId', 'history', 'updatedAt'])) ||
+          // Laptop increment action
+          (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['laptopsImaged', 'laptopLogs', 'updatedAt']))
+        );
+
+      allow delete: if isAdmin() && isValidId(recordId);
+    }
+
+    // Student Roster Collection
+    match /students/{studentId} {
+      allow get: if isSignedIn() && isValidId(studentId);
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(studentId) && request.resource.data.id == studentId && isValidStudent(request.resource.data);
+      allow update: if isAdmin() && isValidId(studentId) && isValidStudent(request.resource.data) && request.resource.data.id == resource.data.id;
+      allow delete: if isAdmin() && isValidId(studentId);
+    }
+
+    // Alerts Collection
+    match /alerts/{alertId} {
+      allow get: if isSignedIn() && isValidId(alertId);
+      allow list: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(alertId) && request.resource.data.id == alertId && isValidAlert(request.resource.data);
+      allow update: if false;
+      allow delete: if isAdmin() && isValidId(alertId);
+    }
+
+    // Settings Collection
+    match /settings/{settingId} {
+      allow get: if isSignedIn() && isValidId(settingId);
+      allow list: if isSignedIn();
+      allow create, update: if isAdmin() && isValidId(settingId) && isValidSettings(request.resource.data);
+      allow delete: if false;
+    }
+
+    // Connectivity Test Document
+    match /test/{docId} {
+      allow read, write: if isSignedIn();
+    }
+  }
+}

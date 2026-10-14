@@ -1,27 +1,38 @@
 import React from 'react';
-import { LogIn, LogOut, CheckCircle2, Clock, AlertTriangle } from 'lucide-react';
+import { LogIn, LogOut, CheckCircle2, Clock, Laptop, Lock } from 'lucide-react';
 import { AttendanceRecord, Student } from '../types';
 
 interface MemberCardProps {
   student: Student;
   record?: AttendanceRecord;
-  index: number;
+  index?: number;
   onCheckIn: (studentId: string) => void;
   onCheckOut: (studentId: string) => void;
   isLoading?: boolean;
+  onUpdateLaptops?: (params: {
+    studentId: string;
+    delta?: number;
+    setCount?: number;
+  }) => Promise<void>;
+  onOpenLaptopModal?: (student: Student) => void;
+  allTimeLaptops?: number;
+  isBefore3PM?: boolean;
 }
 
 export const MemberCard: React.FC<MemberCardProps> = ({
   student,
   record,
-  index,
   onCheckIn,
   onCheckOut,
   isLoading,
+  allTimeLaptops,
+  isBefore3PM = false,
 }) => {
   const isCheckedIn = Boolean(record?.clockInTime);
   const isCheckedOut = Boolean(record?.clockOutTime);
   const isFlagged = Boolean(record?.isFlagged);
+  const laptopsImaged = record?.laptopsImaged || 0;
+  const cumulativeLaptops = allTimeLaptops !== undefined ? allTimeLaptops : laptopsImaged;
 
   return (
     <div
@@ -34,25 +45,13 @@ export const MemberCard: React.FC<MemberCardProps> = ({
           : 'bg-white border-slate-200 hover:border-slate-300 shadow-xs'
       }`}
     >
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         
         {/* Student Info */}
-        <div className="flex items-start sm:items-center space-x-3 min-w-0">
-          <div
-            className={`w-9 h-9 rounded-lg flex items-center justify-center font-bold text-xs shrink-0 ${
-              isCheckedOut
-                ? 'bg-indigo-100 text-indigo-700'
-                : isCheckedIn
-                ? 'bg-emerald-100 text-emerald-800'
-                : 'bg-slate-100 text-slate-600'
-            }`}
-          >
-            #{index + 1}
-          </div>
-
-          <div className="min-w-0">
+        <div className="flex items-start sm:items-center space-x-3 min-w-0 flex-1">
+          <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 flex-wrap">
-              <h3 className="text-base font-semibold text-slate-900 truncate">
+              <h3 className="text-base font-semibold text-slate-900 break-words">
                 {student.name}
               </h3>
 
@@ -73,14 +72,14 @@ export const MemberCard: React.FC<MemberCardProps> = ({
                 </span>
               )}
 
-              {/* Flagged Badge */}
-              {isFlagged && (
+              {/* Cumulative Laptops Badge */}
+              {cumulativeLaptops > 0 && (
                 <span
-                  title={record?.flagReason || 'Flagged for rapid check-in'}
-                  className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-md bg-amber-50 text-amber-800 border border-amber-200 cursor-help"
+                  title={`All-Time Total: ${cumulativeLaptops} laptops imaged`}
+                  className="inline-flex items-center gap-1 text-[11px] font-medium px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-600 border border-slate-200"
                 >
-                  <AlertTriangle className="w-3 h-3 text-amber-600" />
-                  Flagged
+                  <Laptop className="w-3 h-3 text-slate-500" />
+                  <span>Total: {cumulativeLaptops}</span>
                 </span>
               )}
             </div>
@@ -112,72 +111,102 @@ export const MemberCard: React.FC<MemberCardProps> = ({
           </div>
         </div>
 
-        {/* Check In & Check Out Interactive Boxes */}
-        <div className="flex items-center gap-2 sm:gap-3 shrink-0 self-stretch sm:self-center">
+        {/* Right side: Laptop Imaging Counter & Check In / Out Buttons */}
+        <div className="flex flex-wrap sm:flex-nowrap items-center gap-2.5 shrink-0 pt-2 lg:pt-0 border-t lg:border-t-0 border-slate-100">
           
-          {/* Box 1: Check In Box */}
-          <button
-            id={`btn-checkin-${student.id}`}
-            disabled={isCheckedIn || isLoading}
-            onClick={() => onCheckIn(student.id)}
-            className={`flex-1 sm:flex-initial flex items-center justify-center gap-2 px-3.5 py-2.5 rounded-lg font-medium text-xs transition-all ${
-              isCheckedIn
-                ? 'bg-emerald-50 text-emerald-800 border border-emerald-300 cursor-default font-semibold'
-                : 'bg-emerald-600 text-white hover:bg-emerald-700 active:scale-[0.98] shadow-xs cursor-pointer'
-            }`}
-            title={isCheckedIn ? `Checked in at ${record?.clockInTime}` : `Click to check in ${student.name}`}
+          {/* Read-Only Laptops Imaged Display (Managed by Admin) */}
+          <div
+            className="inline-flex items-center gap-1.5 bg-slate-50 border border-slate-200/80 rounded-lg px-2.5 py-1.5"
+            title={`${student.name}: ${laptopsImaged} laptop${laptopsImaged === 1 ? '' : 's'} imaged today (${cumulativeLaptops} total all-time). Laptops are entered by the club administrator.`}
           >
-            {isCheckedIn ? (
-              <>
-                <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                <div className="text-left leading-tight">
-                  <span className="block font-semibold">Checked In</span>
-                  <span className="text-[10px] font-normal opacity-90">{record?.clockInTime}</span>
-                </div>
-              </>
-            ) : (
-              <>
-                <LogIn className="w-4 h-4" />
-                <span>Check In</span>
-              </>
-            )}
-          </button>
+            <Laptop className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+            <span className="text-[11px] font-medium text-slate-600 whitespace-nowrap">
+              Imaged:
+            </span>
+            <span className="inline-flex items-center justify-center font-mono text-xs font-bold text-indigo-700 bg-white border border-indigo-200/80 rounded px-1.5 py-0.5 min-w-[22px]">
+              {laptopsImaged}
+            </span>
+          </div>
 
-          {/* Box 2: Check Out Box */}
-          <button
-            id={`btn-checkout-${student.id}`}
-            disabled={!isCheckedIn || isCheckedOut || isLoading}
-            onClick={() => onCheckOut(student.id)}
-            className={`flex-1 sm:flex-initial flex items-center justify-center gap-2 px-3.5 py-2.5 rounded-lg font-medium text-xs transition-all ${
-              isCheckedOut
-                ? 'bg-slate-100 text-slate-700 border border-slate-300 cursor-default font-semibold'
-                : isCheckedIn
-                ? 'bg-indigo-600 text-white hover:bg-indigo-700 active:scale-[0.98] shadow-xs cursor-pointer'
-                : 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed opacity-60'
-            }`}
-            title={
-              isCheckedOut
-                ? `Clocked out at ${record?.clockOutTime}`
-                : isCheckedIn
-                ? `Click to clock out ${student.name}`
-                : 'Must check in first before checking out'
-            }
-          >
-            {isCheckedOut ? (
-              <>
-                <CheckCircle2 className="w-4 h-4 text-slate-600" />
-                <div className="text-left leading-tight">
-                  <span className="block font-semibold">Clocked Out</span>
-                  <span className="text-[10px] font-normal opacity-90">{record?.clockOutTime}</span>
-                </div>
-              </>
-            ) : (
-              <>
-                <LogOut className="w-4 h-4" />
-                <span>Check Out</span>
-              </>
-            )}
-          </button>
+          {/* Check In & Check Out Interactive Boxes */}
+          <div className="flex items-center gap-2 shrink-0">
+            {/* Box 1: Check In Box */}
+            <button
+              id={`btn-checkin-${student.id}`}
+              disabled={isCheckedIn || isLoading}
+              onClick={() => onCheckIn(student.id)}
+              className={`flex-1 sm:flex-initial flex items-center justify-center gap-2 px-3.5 py-2 rounded-lg font-medium text-xs transition-all ${
+                isCheckedIn
+                  ? 'bg-emerald-50 text-emerald-800 border border-emerald-300 cursor-default font-semibold'
+                  : isBefore3PM
+                  ? 'bg-amber-100/90 hover:bg-amber-200 text-amber-900 border border-amber-300/90 active:scale-[0.98] shadow-xs cursor-pointer font-semibold'
+                  : 'bg-emerald-600 text-white hover:bg-emerald-700 active:scale-[0.98] shadow-xs cursor-pointer'
+              }`}
+              title={
+                isCheckedIn
+                  ? `Checked in at ${record?.clockInTime}`
+                  : isBefore3PM
+                  ? `Volunteering check-in opens at 3:00 PM. Early arrival times must be entered in the Admin Panel.`
+                  : `Click to check in ${student.name}`
+              }
+            >
+              {isCheckedIn ? (
+                <>
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                  <div className="text-left leading-tight">
+                    <span className="block font-semibold">Checked In</span>
+                    <span className="text-[10px] font-normal opacity-90">{record?.clockInTime}</span>
+                  </div>
+                </>
+              ) : isBefore3PM ? (
+                <>
+                  <Lock className="w-3.5 h-3.5 text-amber-700" />
+                  <span>Opens 3:00 PM</span>
+                </>
+              ) : (
+                <>
+                  <LogIn className="w-4 h-4" />
+                  <span>Check In</span>
+                </>
+              )}
+            </button>
+
+            {/* Box 2: Check Out Box */}
+            <button
+              id={`btn-checkout-${student.id}`}
+              disabled={!isCheckedIn || isCheckedOut || isLoading}
+              onClick={() => onCheckOut(student.id)}
+              className={`flex-1 sm:flex-initial flex items-center justify-center gap-2 px-3.5 py-2 rounded-lg font-medium text-xs transition-all ${
+                isCheckedOut
+                  ? 'bg-slate-100 text-slate-700 border border-slate-300 cursor-default font-semibold'
+                  : isCheckedIn
+                  ? 'bg-indigo-600 text-white hover:bg-indigo-700 active:scale-[0.98] shadow-xs cursor-pointer'
+                  : 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed opacity-60'
+              }`}
+              title={
+                isCheckedOut
+                  ? `Clocked out at ${record?.clockOutTime}`
+                  : isCheckedIn
+                  ? `Click to clock out ${student.name}`
+                  : 'Must check in first before checking out'
+              }
+            >
+              {isCheckedOut ? (
+                <>
+                  <CheckCircle2 className="w-4 h-4 text-slate-600" />
+                  <div className="text-left leading-tight">
+                    <span className="block font-semibold">Clocked Out</span>
+                    <span className="text-[10px] font-normal opacity-90">{record?.clockOutTime}</span>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <LogOut className="w-4 h-4" />
+                  <span>Check Out</span>
+                </>
+              )}
+            </button>
+          </div>
 
         </div>
 

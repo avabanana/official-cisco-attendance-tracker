@@ -1,0 +1,18 @@
+{
+  "id": "email-1791941469001-8pyog",
+  "timestamp": 1791941469001,
+  "dateStr": "2026-10-13",
+  "recipient": "avasophianorgaard@gmail.com",
+  "subject": "Completed Club Attendance & Laptop Spreadsheet - 2026-10-13",
+  "status": "sent",
+  "method": "admin_manual_trigger",
+  "message": "Completed daily spreadsheet generated and successfully dispatched to avasophianorgaard@gmail.com (6 volunteers attended, 0 clocked out completed, 0.00 hrs hours, 15 laptops imaged).",
+  "csvFileName": "club_attendance_and_laptops_2026-10-13.csv",
+  "recordCount": 87,
+  "activeCount": 6,
+  "totalHours": "0.00 hrs",
+  "totalLaptops": 15,
+  "dispatchedAt": "2026-10-14T01:31:09.001Z",
+  "csvPreview": "Student Name,Status,Clock In Time,Clock Out Time,Duration,Laptops Imaged (Session),Flagged Proxy Alert,Flag Reason\r\n\"Abdalla, Hamza O\",\"Absent\",\"\",\"\",\"\",0,\"No\",\"\"\r\n\"Agarwal, Ria\",\"Absent\",\"\",\"\",\"\",0,\"No\",\"\"\r\n\"Agrawal, Ansh\",\"Absent\",\"\",\"\",\"\",0,\"No\",\"\"\r\n\"Anderson-Smith, Anna\",\"Absent\",\"\",\"\",\"\",0,\"No\",\"\"\r\n\"Arakawa, Sota\",\"Absent\",\"\",\"\",\"\",0,\"No\",\"\"\r\n\"Ashbaugh, Connor\",\"Absent\",\"\",\"\",\"\",0,\"No\",\"\"\r\n\"Atofau, Christopher J\",\"Absent\",\"\",\"\",\"\",0,\"No\",\"\"\r\n\"Baum, Cameron J\",\"Present (Active)\",\"03:05:10 PM\",\"\",\"\",3,\"No\",\"\"\r\n\"Bharadwaj, Vedavit\",\"Absent\",\"\",\"\",\"\",0,\"No\",\"\"\r\n\"Biswas, Ar\",\"Absent\",\"\",\"\",\"\",0,\"No\",\"\"\r\n\"Burger, Alexander\",\"Absent\",\"\",\"\",\"\",0,\"No\",\"\"\r\n\"Canul, Alfredo\",\"Absent\",\"\",\"\",\"\",0,\"No\",\"\"\r\n\"Chen, Logan\",\"Absent\",\"\",\"\",\"\",0,\"No\",\"\"\r\n\"Chen, Ryan\",\"Absent\",\"\",\"\",\"\",0,\"No\",\"\"\r\n\"Chettiar, Nikhil\",\"Present (Active)\",\"03:10:00 PM\",\"\",\"\",1,\"No\",\"\"\r\n\"Coates Robertson, Henry\",\"Absent\",\"\",\"\",\"\",0,\"No\",\"\"\r\n\"Dasan, Pranav\",\"Absent\",\"\",\"\",\"\",0,\"No\",\"\"\r\n\"Davalbhakta, Aarush\",\"Absent\",\"\",\"\",\"\",0,\"No\",\"\"\r\n\"De Celle, Luke O\",\"Absent\",\"\",\"\",\"\",0,\"No\",\"\"\r\n\"Deniel, Enzo\",\"Absent\",\"\",\"\",\"\",0,\"No\",\"\"\r\n\"Duriseti, S\",\"Absent\",\"\",\"\",\"\",0,\"No\",\"\"\r\n\"Fu, Niya\",\"Absent\",\"\",\"\",\"\",0,\"No\",\"\"\r\n\"Gu, Noah\",\"Absent\",\"\",\"\",\"\",0,\"No\",\"\"\r\n\"Guerrero, Alfredo\",\"Absent\",\"\",\"\",\"\",0,\"No\",\"\"\r\n\"Guo, Raymond\",\"Absent\",\"\",\"\",\"\",0,\"No\",\"\"\r\n\"Hanif, Ela\",\"Absent\",\"\",\"\",\"\",0,\"No\",\"\"\r\n\"Herling, Luca\",\"Absent\",\"\",\"\",\"\",0,\"No\",\"\"\r\n\"Hobbs, William\",\"Absent\",\"\",\"\",\"\",0,\"No\",\"\"\r\n\"Hsiao, William\",\"Absent\",\"\",\"\",\"\",0,\"No\",\"\"\r\n\"H",
+  "csvLength": 4190
+}

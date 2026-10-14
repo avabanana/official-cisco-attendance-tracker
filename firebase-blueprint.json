@@ -1,0 +1,208 @@
+{
+  "entities": {
+    "AttendanceRecord": {
+      "title": "AttendanceRecord",
+      "description": "Daily student volunteer attendance and laptop imaging output",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Unique record identifier"
+        },
+        "studentId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Student unique identifier"
+        },
+        "studentName": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Formatted student name"
+        },
+        "date": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+          "description": "Session date YYYY-MM-DD"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["absent", "checked_in", "completed"],
+          "description": "Current attendance status"
+        },
+        "clockInTime": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Clock in time formatted"
+        },
+        "clockInTimestamp": {
+          "type": "number",
+          "description": "Unix millisecond timestamp of clock in"
+        },
+        "clockOutTime": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "Clock out time formatted"
+        },
+        "clockOutTimestamp": {
+          "type": "number",
+          "description": "Unix millisecond timestamp of clock out"
+        },
+        "durationMinutes": {
+          "type": "number",
+          "description": "Total duration in minutes"
+        },
+        "laptopsImaged": {
+          "type": "number",
+          "description": "Total laptops imaged in session"
+        },
+        "isFlagged": {
+          "type": "boolean",
+          "description": "Flagged proxy or audit alert"
+        },
+        "flagReason": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "Reason for flagging"
+        },
+        "post415Exceeded": {
+          "type": "boolean",
+          "description": "Whether checkout occurred after 4:15 PM"
+        },
+        "cutoffExceeded": {
+          "type": "boolean",
+          "description": "Whether checkout occurred after hard cutoff"
+        },
+        "checkedInByClientId": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Kiosk client identifier"
+        },
+        "checkedOutByClientId": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Kiosk client identifier"
+        }
+      },
+      "required": ["id", "studentId", "studentName", "date", "status"]
+    },
+    "Student": {
+      "title": "Student",
+      "description": "Volunteer student member in club roster",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Unique student slug"
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Full student name (Last, First)"
+        },
+        "lastName": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "Last name"
+        },
+        "firstName": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "First name"
+        },
+        "isCustom": {
+          "type": "boolean",
+          "description": "Whether added dynamically as volunteer"
+        }
+      },
+      "required": ["id", "name", "lastName", "firstName"]
+    },
+    "SecurityAlert": {
+      "title": "SecurityAlert",
+      "description": "Kiosk security or rapid check-in audit event",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Unique alert id"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["rapid_checkin", "post_415_checkout", "admin_reset", "admin_edit"],
+          "description": "Alert category"
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 500,
+          "description": "Human readable event detail"
+        },
+        "timestamp": {
+          "type": "number",
+          "description": "Event timestamp"
+        },
+        "date": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+          "description": "Date of occurrence"
+        }
+      },
+      "required": ["id", "type", "message", "timestamp", "date"]
+    },
+    "ClubSettings": {
+      "title": "ClubSettings",
+      "description": "Global settings for laptop targets and security parameters",
+      "type": "object",
+      "properties": {
+        "targetLaptops": {
+          "type": "number",
+          "description": "Total semester target laptops"
+        },
+        "sessionTarget": {
+          "type": "number",
+          "description": "Target laptops per session"
+        },
+        "rapidThresholdSeconds": {
+          "type": "number",
+          "description": "Rapid check-in warning threshold"
+        },
+        "strictMode": {
+          "type": "boolean",
+          "description": "Strict checkout enforcement"
+        },
+        "soundAlerts": {
+          "type": "boolean",
+          "description": "Audio effects toggle"
+        },
+        "kioskMode": {
+          "type": "boolean",
+          "description": "Dedicated kiosk display lock"
+        }
+      },
+      "required": ["targetLaptops", "sessionTarget"]
+    }
+  },
+  "firestore": {
+    "/attendance_records/{recordId}": {
+      "schema": "AttendanceRecord",
+      "description": "Daily attendance and laptop count documents indexed by session date and student id"
+    },
+    "/students/{studentId}": {
+      "schema": "Student",
+      "description": "Club volunteers and roster entries"
+    },
+    "/alerts/{alertId}": {
+      "schema": "SecurityAlert",
+      "description": "Audit security alerts and unusual activity flags"
+    },
+    "/settings/{settingId}": {
+      "schema": "ClubSettings",
+      "description": "Club configuration and target settings"
+    }
+  }
+}

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Clock, AlertTriangle, Save, RotateCcw } from 'lucide-react';
+import { X, Clock, AlertTriangle, Save, RotateCcw, Laptop } from 'lucide-react';
 import { AttendanceRecord } from '../types';
 
 interface EditRecordModalProps {
@@ -10,6 +10,7 @@ interface EditRecordModalProps {
     clockInTime: string | null;
     clockOutTime: string | null;
     isFlagged: boolean;
+    laptopsImaged?: number;
   }) => Promise<void>;
   onReset: (studentId: string) => Promise<void>;
 }
@@ -22,6 +23,7 @@ export const EditRecordModal: React.FC<EditRecordModalProps> = ({
 }) => {
   const [clockInTime, setClockInTime] = useState(record.clockInTime || '');
   const [clockOutTime, setClockOutTime] = useState(record.clockOutTime || '');
+  const [laptopsImaged, setLaptopsImaged] = useState(record.laptopsImaged || 0);
   const [isFlagged, setIsFlagged] = useState(record.isFlagged);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -34,6 +36,7 @@ export const EditRecordModal: React.FC<EditRecordModalProps> = ({
         clockInTime: clockInTime.trim() || null,
         clockOutTime: clockOutTime.trim() || null,
         isFlagged,
+        laptopsImaged: Math.max(0, Number(laptopsImaged) || 0),
       });
       onClose();
     } finally {
@@ -74,26 +77,102 @@ export const EditRecordModal: React.FC<EditRecordModalProps> = ({
         {/* Form */}
         <form onSubmit={handleSubmit} className="p-5 space-y-4">
           <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">
-              Clock In Time
-            </label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-xs font-semibold text-slate-700">
+                Clock In Time
+              </label>
+              <span className="text-[11px] text-indigo-600 font-medium">
+                Admin Entry / Early Override
+              </span>
+            </div>
             <div className="relative">
               <Clock className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <input
                 type="text"
                 value={clockInTime}
                 onChange={(e) => setClockInTime(e.target.value)}
-                placeholder="e.g. 03:15:00 PM (or leave empty)"
+                placeholder="e.g. 02:30:00 PM or 03:00:00 PM (or leave empty)"
                 className="w-full pl-9 pr-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none"
               />
             </div>
-            <p className="text-[11px] text-slate-400 mt-1">Leave empty to mark as not checked in</p>
+
+            {/* Quick Presets for Admin (specifically supporting early before 3 PM entry) */}
+            <div className="flex flex-wrap items-center gap-1.5 mt-2">
+              <span className="text-[10px] text-slate-500 font-semibold">Presets:</span>
+              <button
+                type="button"
+                onClick={() => {
+                  const nowStr = new Date().toLocaleTimeString('en-US', {
+                    timeZone: 'America/Los_Angeles',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit',
+                    hour12: true,
+                  });
+                  setClockInTime(nowStr);
+                }}
+                className="text-[10px] px-2 py-0.5 rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 font-medium cursor-pointer transition-colors"
+                title="Use current Pacific time"
+              >
+                Use Current Time
+              </button>
+              <button
+                type="button"
+                onClick={() => setClockInTime('02:00:00 PM')}
+                className="text-[10px] px-2 py-0.5 rounded bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 font-medium cursor-pointer transition-colors"
+                title="Allow 2:00 PM early check-in"
+              >
+                2:00 PM (Early)
+              </button>
+              <button
+                type="button"
+                onClick={() => setClockInTime('02:30:00 PM')}
+                className="text-[10px] px-2 py-0.5 rounded bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 font-medium cursor-pointer transition-colors"
+                title="Allow 2:30 PM early check-in"
+              >
+                2:30 PM (Early)
+              </button>
+              <button
+                type="button"
+                onClick={() => setClockInTime('02:45:00 PM')}
+                className="text-[10px] px-2 py-0.5 rounded bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 font-medium cursor-pointer transition-colors"
+                title="Allow 2:45 PM early check-in"
+              >
+                2:45 PM (Early)
+              </button>
+              <button
+                type="button"
+                onClick={() => setClockInTime('03:00:00 PM')}
+                className="text-[10px] px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 font-medium cursor-pointer transition-colors"
+                title="Set standard 3:00 PM check-in"
+              >
+                3:00 PM
+              </button>
+            </div>
+
+            <p className="text-[11px] text-slate-500 mt-1.5 bg-slate-50 p-2 rounded-lg border border-slate-200 leading-relaxed">
+              💡 <strong>Early Clock-In Authorization:</strong> Members cannot clock in before 3:00 PM on the kiosk. Admins can enter early arrival times (e.g. 2:30 PM) here to grant volunteer hours.
+            </p>
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1">
-              Clock Out Time
-            </label>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-xs font-semibold text-slate-700">
+                Clock Out Time
+              </label>
+              {record.actualCheckoutTime && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setClockOutTime(record.actualCheckoutTime!);
+                    setIsFlagged(false);
+                  }}
+                  className="text-[11px] font-semibold text-amber-700 hover:text-amber-800 underline cursor-pointer"
+                >
+                  Apply Attempted Time ({record.actualCheckoutTime})
+                </button>
+              )}
+            </div>
             <div className="relative">
               <Clock className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <input
@@ -104,6 +183,28 @@ export const EditRecordModal: React.FC<EditRecordModalProps> = ({
                 className="w-full pl-9 pr-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none"
               />
             </div>
+            {record.cutoffExceeded && (
+              <p className="text-[11px] text-amber-700 mt-1 bg-amber-50 p-2 rounded border border-amber-200">
+                ⚠️ Student attempted checkout at <strong>{record.actualCheckoutTime}</strong>, past the 4:45 PM cutoff. Setting the actual time here and saving will approve the exception and recalculate volunteering hours.
+              </p>
+            )}
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              Laptops Imaged Today
+            </label>
+            <div className="relative">
+              <Laptop className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="number"
+                min="0"
+                value={laptopsImaged}
+                onChange={(e) => setLaptopsImaged(Math.max(0, parseInt(e.target.value) || 0))}
+                className="w-full pl-9 pr-3 py-2 text-sm border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+              />
+            </div>
+            <p className="text-[11px] text-slate-400 mt-1">Number of laptops successfully imaged this session</p>
           </div>
 
           {/* Flag Toggle */}

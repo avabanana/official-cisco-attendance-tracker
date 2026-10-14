@@ -1,70 +1,64 @@
 import express from 'express';
-import fs from 'fs';
+import fs from 'node:fs';
+import { AttendanceDatabase, type StoreData } from './storage.ts';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { CLUB_ROSTER } from './src/data/roster.ts';
-import { AttendanceRecord, SecurityAlert, SecuritySettings } from './src/types.ts';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { AttendanceRecord, SecurityAlert } from './src/types.ts';
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT || 3000);
 
 app.use(express.json());
 
-// In-memory + persisted data store
-const DATA_FILE = path.join(process.cwd(), 'attendance_store.json');
-
-interface StoreData {
-  recordsByDate: Record<string, Record<string, AttendanceRecord>>;
-  alerts: SecurityAlert[];
-  settings: SecuritySettings;
+// Every API operation reads and writes under a SQLite transaction.
+const database = new AttendanceDatabase(process.env.ATTENDANCE_DB_PATH || path.join(process.cwd(), 'data', 'attendance.sqlite'));
+if (fs.existsSync(path.join(process.cwd(), 'attendance_store.json')) && !database.isInitialized()) {
+  database.close();
+  throw new Error('Legacy attendance_store.json found. Explicitly import it into the selected database before starting; no attendance data was changed.');
 }
+let store: StoreData;
+let pendingEvents: Array<[string, any]> | null = null;
 
-let store: StoreData = {
-  recordsByDate: {},
-  alerts: [],
-  settings: {
-    rapidThresholdSeconds: 20,
-    strictMode: false,
-    soundAlerts: true,
-    kioskMode: true,
-  },
-};
-
-// Load existing data if available
-try {
-  if (fs.existsSync(DATA_FILE)) {
-    const raw = fs.readFileSync(DATA_FILE, 'utf-8');
-    const parsed = JSON.parse(raw);
-    store = {
-      recordsByDate: parsed.recordsByDate || {},
-      alerts: parsed.alerts || [],
-      settings: { ...store.settings, ...(parsed.settings || {}) },
-    };
-  }
-} catch (err) {
-  console.warn('Could not load existing attendance data, starting fresh:', err);
+function route(handler: express.RequestHandler): express.RequestHandler {
+  return (req, res, next) => {
+    let response: { kind: 'json' | 'send'; body: any } | undefined;
+    const buffered = new Proxy(res, {
+      get(target, property) {
+        if (property === 'json' || property === 'send') return (body: any) => {
+          response = { kind: property, body };
+          return buffered;
+        };
+        if (property === 'status') return (code: number) => { target.statusCode = code; return buffered; };
+        const value = Reflect.get(target, property);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    pendingEvents = [];
+    try {
+      database.transaction((current) => {
+        store = current;
+        handler(req, buffered, next);
+      });
+      const events = pendingEvents;
+      pendingEvents = null;
+      for (const [type, data] of events) broadcast(type, data);
+      if (response) res[response.kind](response.body);
+    } catch (error) {
+      pendingEvents = null;
+      console.error('Attendance operation failed:', error);
+      res.removeHeader('Content-Disposition');
+      res.setHeader('Content-Type', 'application/json');
+      res.status(503).json({ error: 'Attendance storage unavailable. Please retry.' });
+    }
+  };
 }
-
-function saveStore() {
-  try {
-    fs.writeFileSync(DATA_FILE, JSON.stringify(store, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Failed to persist attendance store:', err);
-  }
-}
-
-// Keep track of recent client clicks for rapid detection
-// Map: clientId -> { studentId, studentName, timestamp }
-const clientRecentClicks = new Map<string, { studentId: string; studentName: string; timestamp: number }>();
 
 // SSE clients for real-time live events
 const sseClients = new Set<express.Response>();
 
 function broadcast(eventType: string, data: any) {
+  if (pendingEvents) { pendingEvents.push([eventType, structuredClone(data)]); return; }
   const payload = `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
   for (const client of sseClients) {
     try {
@@ -94,7 +88,7 @@ function formatTime(date: Date): string {
 
 function initDayRecords(dateStr: string): Record<string, AttendanceRecord> {
   if (!store.recordsByDate[dateStr]) {
-    store.recordsByDate[dateStr] = {};
+    store.recordsByDate[dateStr] = Object.create(null);
   }
   const dayRecords = store.recordsByDate[dateStr];
 
@@ -148,28 +142,27 @@ app.get('/api/roster', (_req, res) => {
 });
 
 // Get Settings
-app.get('/api/settings', (_req, res) => {
+app.get('/api/settings', route((_req, res) => {
   res.json(store.settings);
-});
+}));
 
 // Update Settings
-app.post('/api/settings', (req, res) => {
+app.post('/api/settings', route((req, res) => {
   store.settings = { ...store.settings, ...req.body };
-  saveStore();
   broadcast('settings_updated', store.settings);
   res.json(store.settings);
-});
+}));
 
 // Get attendance for specific date
-app.get('/api/attendance', (req, res) => {
+app.get('/api/attendance', route((req, res) => {
   const dateStr = (req.query.date as string) || getTodayDateString();
   const dayRecords = initDayRecords(dateStr);
   const recordsList = Object.values(dayRecords);
   res.json({ date: dateStr, records: recordsList });
-});
+}));
 
 // Check-in endpoint
-app.post('/api/checkin', (req, res) => {
+app.post('/api/checkin', route((req, res) => {
   const { studentId, date, clientId } = req.body;
   const dateStr = date || getTodayDateString();
   const dayRecords = initDayRecords(dateStr);
@@ -187,7 +180,7 @@ app.post('/api/checkin', (req, res) => {
   let flagReason = '';
   let generatedAlert: SecurityAlert | null = null;
   const clientKey = clientId || req.ip || 'unknown-client';
-  const previousClick = clientRecentClicks.get(clientKey);
+  const previousClick = store.recentClicks[clientKey];
 
   if (previousClick && previousClick.studentId !== studentId) {
     const diffSeconds = Math.round((now - previousClick.timestamp) / 1000);
@@ -215,7 +208,6 @@ app.post('/api/checkin', (req, res) => {
 
       // If strict mode is enabled, block the action
       if (store.settings.strictMode) {
-        saveStore();
         broadcast('security_alert', generatedAlert);
         return res.status(403).json({
           error: `Multiple student check-in prohibited! Only one student may check in per device within ${store.settings.rapidThresholdSeconds}s. An alert has been sent to the club administrator.`,
@@ -244,13 +236,11 @@ app.post('/api/checkin', (req, res) => {
   });
 
   // Track client click for subsequent rate detection
-  clientRecentClicks.set(clientKey, {
+  store.recentClicks[clientKey] = {
     studentId,
     studentName: record.studentName,
     timestamp: now,
-  });
-
-  saveStore();
+  };
 
   // Real-time broadcast
   broadcast('record_updated', record);
@@ -263,10 +253,10 @@ app.post('/api/checkin', (req, res) => {
     record,
     alert: generatedAlert,
   });
-});
+}));
 
 // Check-out endpoint
-app.post('/api/checkout', (req, res) => {
+app.post('/api/checkout', route((req, res) => {
   const { studentId, date, clientId } = req.body;
   const dateStr = date || getTodayDateString();
   const dayRecords = initDayRecords(dateStr);
@@ -301,17 +291,16 @@ app.post('/api/checkout', (req, res) => {
     clientId: clientKey,
   });
 
-  saveStore();
   broadcast('record_updated', record);
 
   res.json({
     success: true,
     record,
   });
-});
+}));
 
 // Reset a student's check-in/out for the day
-app.post('/api/reset-student', (req, res) => {
+app.post('/api/reset-student', route((req, res) => {
   const { studentId, date } = req.body;
   const dateStr = date || getTodayDateString();
   const dayRecords = initDayRecords(dateStr);
@@ -339,14 +328,13 @@ app.post('/api/reset-student', (req, res) => {
     clientId: 'admin',
   });
 
-  saveStore();
   broadcast('record_updated', record);
 
   res.json({ success: true, record });
-});
+}));
 
 // Manual time adjustment (admin override)
-app.post('/api/adjust-time', (req, res) => {
+app.post('/api/adjust-time', route((req, res) => {
   const { studentId, date, clockInTime, clockOutTime, isFlagged } = req.body;
   const dateStr = date || getTodayDateString();
   const dayRecords = initDayRecords(dateStr);
@@ -368,36 +356,33 @@ app.post('/api/adjust-time', (req, res) => {
     record.status = 'absent';
   }
 
-  saveStore();
   broadcast('record_updated', record);
   res.json({ success: true, record });
-});
+}));
 
 // Security Alerts endpoints
-app.get('/api/alerts', (_req, res) => {
+app.get('/api/alerts', route((_req, res) => {
   res.json({ alerts: store.alerts });
-});
+}));
 
-app.post('/api/alerts/acknowledge', (req, res) => {
+app.post('/api/alerts/acknowledge', route((req, res) => {
   const { alertId } = req.body;
   const alert = store.alerts.find((a) => a.id === alertId);
   if (alert) {
     alert.acknowledged = true;
-    saveStore();
     broadcast('alerts_updated', store.alerts);
   }
   res.json({ success: true, alerts: store.alerts });
-});
+}));
 
-app.post('/api/alerts/clear', (_req, res) => {
+app.post('/api/alerts/clear', route((_req, res) => {
   store.alerts = [];
-  saveStore();
   broadcast('alerts_updated', store.alerts);
   res.json({ success: true, alerts: [] });
-});
+}));
 
 // CSV Export endpoint
-app.get('/api/export-csv', (req, res) => {
+app.get('/api/export-csv', route((req, res) => {
   const dateStr = (req.query.date as string) || getTodayDateString();
   const dayRecords = initDayRecords(dateStr);
   const records = Object.values(dayRecords);
@@ -418,7 +403,7 @@ app.get('/api/export-csv', (req, res) => {
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', `attachment; filename="club_attendance_${dateStr}.csv"`);
   res.send(csv);
-});
+}));
 
 // -------------------------------------------------------------
 // Vite Server Integration
@@ -443,4 +428,4 @@ async function startServer() {
   });
 }
 
-startServer();
+startServer().catch((error) => { console.error('Server startup failed:', error); database.close(); process.exitCode = 1; });

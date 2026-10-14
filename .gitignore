@@ -6,3 +6,9 @@ coverage/
 *.log
 .env*
 !.env.example
+
+data/
+attendance_store.json
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

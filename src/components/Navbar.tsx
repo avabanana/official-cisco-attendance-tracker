@@ -112,9 +112,9 @@ export const Navbar: React.FC<NavbarProps> = ({
                     <span>{currentTime || 'Loading...'}</span>
                     <span className="text-[10px] font-semibold bg-slate-100 text-slate-500 px-1 py-0.2 rounded">PT</span>
                   </span>
-                  <span className="flex items-center gap-1 text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200" title="Firebase Firestore Cloud Backend Connected">
+                  <span className="flex items-center gap-1 text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200" title="Server event connection; database verification is available in Admin">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                    Firebase
+                    {isConnected ? 'Server online' : 'Offline'}
                   </span>
                 </div>
               </div>

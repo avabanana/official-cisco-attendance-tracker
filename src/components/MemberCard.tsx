@@ -1,5 +1,6 @@
 import React from 'react';
 import { LogIn, LogOut, CheckCircle2, Clock, Laptop, Lock } from 'lucide-react';
+import { canCheckIn } from '../utils/attendanceState';
 import { AttendanceRecord, Student } from '../types';
 
 interface MemberCardProps {
@@ -28,8 +29,8 @@ export const MemberCard: React.FC<MemberCardProps> = ({
   allTimeLaptops,
   isBefore3PM = false,
 }) => {
-  const isCheckedIn = Boolean(record?.clockInTime);
-  const isCheckedOut = Boolean(record?.clockOutTime);
+  const isCheckedIn = record?.status === 'checked_in';
+  const isCheckedOut = record?.status === 'completed';
   const isFlagged = Boolean(record?.isFlagged);
   const laptopsImaged = record?.laptopsImaged || 0;
   const cumulativeLaptops = allTimeLaptops !== undefined ? allTimeLaptops : laptopsImaged;
@@ -133,7 +134,7 @@ export const MemberCard: React.FC<MemberCardProps> = ({
             {/* Box 1: Check In Box */}
             <button
               id={`btn-checkin-${student.id}`}
-              disabled={isCheckedIn || isLoading}
+              disabled={!canCheckIn(record) || isLoading}
               onClick={() => onCheckIn(student.id)}
               className={`flex-1 sm:flex-initial flex items-center justify-center gap-2 px-3.5 py-2 rounded-lg font-medium text-xs transition-all ${
                 isCheckedIn
@@ -166,7 +167,7 @@ export const MemberCard: React.FC<MemberCardProps> = ({
               ) : (
                 <>
                   <LogIn className="w-4 h-4" />
-                  <span>Check In</span>
+                  <span>{isCheckedOut ? 'Re-In' : 'Check In'}</span>
                 </>
               )}
             </button>

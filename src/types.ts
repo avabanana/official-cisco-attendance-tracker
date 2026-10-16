@@ -41,8 +41,10 @@ export interface AttendanceRecord {
   exceptionGranted?: boolean; // True if admin approved exception past 4:45 PM
   exceptionApprovedTime?: string; // Time approved by admin
   exceptionNote?: string; // Note from admin regarding exception
+  completedSessionMinutes?: number; // Closed sessions carried into a manual re-in.
+  revision?: number;
   history?: Array<{
-    action: 'check_in' | 'check_out' | 'reset' | 'laptop_update' | 'exception_grant';
+    action: 'check_in' | 'check_out' | 'reset' | 'laptop_update' | 'exception_grant' | 'admin_edit' | 'csv_reconcile';
     timestamp: number;
     timeFormatted: string;
     clientId: string;
@@ -99,6 +101,7 @@ export interface SecurityAlert {
   date: string;
   timeFormatted: string;
   type: 'DEVICE_REUSE' | 'UNUSUAL_ACTION' | 'LATE_CHECKOUT' | 'POST_415_CHECKOUT' | 'RAPID_CHECKIN';
+
   severity: AlertSeverity;
   currentStudent: string;
   studentId?: string;

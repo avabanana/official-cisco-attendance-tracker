@@ -1,80 +1,154 @@
 # Club Attendance Tracker
 
-## Development
+Attendance is **manual**. Opening the app, selecting a date, adding a roster
+entry without checking “clock in now,” starting the server, polling, and
+verifying Firebase never check anybody in. A deliberate member or authenticated
+admin action must commit successfully before the UI displays it as saved.
 
-Use Node.js 24 LTS (minimum 22.13 for `node:sqlite`), then:
+## Storage and deployment requirements
+
+Use Node 24 LTS (minimum 22.13), `npm ci`, and `npm run dev`.
+Production uses **Firestore as the authoritative database**, including ordered
+history, laptop logs, admin exceptions, settings, alerts, device bindings, and
+expiring admin sessions. No browser sync is required. The former sync button
+performs a read-only verification; neither startup nor page load imports,
+seeds, merges, or replays attendance.
+
+The server uses the Firebase Admin SDK and Application Default Credentials.
+On Cloud Run, grant its runtime service account the appropriate Firestore IAM
+access (normally `roles/datastore.user`) to the configured project/database.
+Use the attached service identity; do not place service-account JSON in the
+client or repository. The default project/database come from
+`firebase-applet-config.json`; server overrides are `FIREBASE_PROJECT_ID` and
+`FIRESTORE_DATABASE_ID`. `PORT` defaults to 3000 and listens on all interfaces.
+Set `ADMIN_PASSWORD` through Cloud Run Secret Manager configuration. There is
+no fallback password. Rotate the old password that was committed in previous
+versions of this repository. Admin sessions expire after eight hours and are
+revoked across instances when logged out.
+
+Firestore rules deny browser writes, including signed-in admin browsers; all
+mutations must pass server validation and authentication. Deploy the reviewed
+`firestore.rules` to the **named database actually used by this app**, alongside
+the server change. Deploying rules to `(default)` does not protect a different
+named database. Public roster/attendance reads retain the previous app's access
+behavior. Alerts require verified admin identity; private server state,
+archives, and reconciliation backups are denied to browser clients.
+
+A request performs a Firestore transaction. Only the committed attempt emits
+SSE events or a success response. Failed storage operations return 503 rather
+than claiming data was retained. Multiple server instances load shared state
+under Firestore transactions. SSE is local to an instance; read-only polling
+also refreshes attendance every 30 seconds. No ephemeral SQLite fallback is
+allowed on Cloud Run.
+
+Local tests may explicitly select `ATTENDANCE_STORAGE=sqlite` with a disposable
+`ATTENDANCE_DB_PATH`. This is not a production migration path. Retained legacy
+JSON/SQLite data is never imported automatically. Do not delete those sources.
+
+## Attendance invariants
+
+- Displayed records belong to the selected Pacific date. Out-of-order fetches
+  and cached browser attendance cannot carry yesterday's arrivals into today.
+- No optimistic check-in/check-out or success sound precedes a server commit.
+  An uncertain network result is reloaded, never replayed automatically.
+- Re-In clears the current departure and retains ordered history, laptop logs,
+  and previously completed minutes. Subsequent checkout adds the new active
+  session only, excluding the time away. Duplicate active check-ins and
+  duplicate completed checkouts do not append history or change timestamps.
+- Self-service changes require a device ID, today's Pacific date, and explicit
+  manual intent. One device is bound to one student for the day. Authenticated
+  admin actions can assist students and change historical records. The existing
+  anonymous kiosk workflow does not verify a student's real-world identity;
+  device IDs are not a substitute for per-student authentication.
+- Early self check-in is blocked before 3 PM Pacific. Checkout notices after
+  4:15 PM and the 4:45 PM cap/explicit admin exception flow are handled server-side.
+- Adding laptop counts does not mark attendance. Roster creation defaults to
+  no check-in; only an admin's explicit `clockInNow: true` checks in the new member.
+- Resets are explicit admin operations. Day reset preserves an audit history;
+  global reset changes the active generation and archives overwritten records
+  instead of allowing old records to reappear through a merge.
+
+## Historical data review (do not deploy or overwrite without approval)
+
+The retired `import-user-csvs.ts` and `sync-all-to-db-and-firestore.ts` scripts
+contained hardcoded/mirrored attendance and import-time side effects. They now
+refuse to run. In particular, October 13 must never be inferred from October 12.
+
+First obtain a **read-only** live snapshot using an authorized server identity:
 
 ```sh
-npm ci
-npm run dev
+npm run snapshot:firestore -- /secure/new-live-snapshot.json
+python3 scripts/reconcile-attendance.py \
+  --csv-dir /secure/supplied-csvs \
+  --snapshot /secure/new-live-snapshot.json \
+  --baseline firebase-read-only-snapshot \
+  --out /secure/review
 ```
 
-The interface, API URLs, response shapes, CSV export, SSE events, check-in/out
-history, admin adjustments/reset, alerts, and strict-mode behavior are retained.
-`PORT` defaults to 3000. `ATTENDANCE_DB_PATH` defaults to
-`data/attendance.sqlite`, relative to the working directory. No database service
-or database credentials are required. `npm run lint`, `npm test`, and
-`npm run build` validate the application. For production builds use
-`NODE_ENV=production npm start`.
+The planner never writes Firebase or source files. It matches unique exact
+student names, preserves source checksums/row numbers, and quarantines filenames
+marked inaccurate or data lost. Missing rows/dates are not invented. Conflicting
+status/times or ambiguous identities remain unresolved. CSVs cannot reconstruct
+lost event history or device identities. Keep the report and plan private.
 
-## Storage design
-
-SQLite stores a versioned, lossless JSON document containing attendance by date,
-records and their ordered history, security alerts, settings, and recent client
-check-ins. Keeping the document format avoids a lossy rewrite of historical
-fields and preserves unknown legacy fields. This intentionally favors the small
-club workload over large-scale analytics: each request reads the document and
-commits its resulting state, so cost grows with total stored history.
-
-Every stateful API operation uses `BEGIN IMMEDIATE`, reloading the latest state
-under the writer lock. Concurrent processes cannot overwrite stale snapshots.
-WAL journaling, `synchronous=FULL`, a five-second lock timeout, and an integrity
-check protect persistence. Responses and SSE updates are emitted only after
-commit. A failed transaction rolls back and returns HTTP 503 with an error;
-retry after correcting disk space, permissions, or lock contention. Startup
-fails if the database cannot be opened or is corrupt; it never silently starts
-with empty data. Recent client checks persist, including across server restarts.
-SSE connections remain local to one server process, as before; use a single
-server instance for real-time fan-out.
-
-Keep the database on persistent **local** storage (not ephemeral container
-storage or a shared network filesystem) with restricted access. Do not expose
-its directory through static hosting. The UI's existing security controls are
-preserved; this change does not add authentication to previously public admin
-endpoints.
-
-## Explicit migration (requires approval for real attendance data)
-
-No migration runs automatically. If `attendance_store.json` exists and the
-selected database is uninitialized, startup stops with instructions rather
-than presenting an empty attendance list. Obtain approval and stop the old
-server to obtain a consistent JSON source. Back up the source securely, then
-choose a **new, nonexistent** destination:
+Review the proposed per-record differences, resolve outstanding source issues,
+and obtain approval. A dry-run live conflict check is:
 
 ```sh
-npm run migrate:attendance -- /absolute/path/attendance_store.json /persistent/path/imported.sqlite
-ATTENDANCE_DB_PATH=/persistent/path/imported.sqlite npm run dev
+npm run reconcile:check -- /secure/review/correction-plan.json
 ```
 
-The importer validates legacy structure, records, settings and alerts, preserves
-records and history without rewriting their timestamps, and commits the entire
-import atomically. It never modifies or deletes the JSON source. The CLI refuses
-an existing destination; the storage layer also refuses to import into any
-initialized database, even one with no attendance. Invalid input fails without
-initializing attendance state. Failed imports may leave an empty SQLite schema;
-choose a different new path for a corrected retry. No real attendance migration
-or deployment was performed during development.
+Only after approval, passing emulator tests, and a verified backup, pass the
+exact SHA-256 of the approved plan file to enable writes:
 
-After an approved import, verify dates, histories, alerts, settings and CSV
-exports against the source before switching the production process. Retain the
-original source and previous server for rollback; any new check-ins after the
-switch must be reconciled before reverting to JSON.
+```sh
+npm run reconcile:check -- /secure/review/correction-plan.json \
+  --approve-plan-sha256 APPROVED_FILE_SHA256
+```
 
-For backups, use SQLite's online backup API or the SQLite CLI `.backup` command.
-Alternatively stop all writers and copy the database together with any `-wal`
-and `-shm` files. Do not copy only the main database while it is being written.
-Test restoration to a separate path and check `PRAGMA integrity_check` before
-using a restored copy. Never replace the live database without approval.
+This validates identities, rejects inaccurate sources and stale baseline
+hashes, and applies **one date atomically at a time**. Before/after documents and
+CSV provenance are saved in private `attendance_reconciliations` documents in
+the same transaction. Earlier dates may commit before a later conflict; reruns
+skip already audited corrections. Existing ordered history is retained, with a
+`csv_reconcile` audit entry, never fabricated check-in events. It cannot resurrect
+records from a subsequent global reset. Never replace Firebase wholesale with
+a proposed JSON copy or a repository backup.
 
-Tests use temporary databases and synthetic attendance only. Existing attendance
-files are ignored by Git and are never read or migrated by tests.
+## Validation and current limits
+
+```sh
+npm run lint
+npm test
+npm run build
+XDG_CONFIG_HOME=/tmp/attendance-tools/config \
+XDG_CACHE_HOME=/tmp/attendance-tools/cache \
+FIREBASE_EMULATORS_PATH=/tmp/attendance-emulators npm run test:emulator
+```
+
+Local API/UI tests use disposable synthetic data. They exercise poisoned
+browser caches, date-response races, no automatic POSTs, failed manual actions,
+re-in/history, security controls, durable reopen, and failed writes.
+The separate Firestore suite requires the official emulator download and checks
+transactions, concurrent writers, rules against anonymous/admin browser writes,
+read-only date loads, and archived reset generations. Ordinary `npm test`
+explicitly reports it skipped when the emulator is absent. A skipped emulator
+suite does not validate Firebase or deployed rules.
+
+In this development environment, local validation passed, but the network proxy
+blocked both Firebase access and the official emulator artifact download. The
+available local Google credential file was also unusable as an ADC identity.
+Live retention, emulator behavior, deployed rules, and live CSV alignment remain
+**unverified** until those checks can run. No deployment, live import, or live
+attendance overwrite was performed. Do not merge/deploy this branch as ready
+until those required checks are completed.
+
+The historical email button generates an export and a pending dispatch log;
+there is no configured email transport in this source. It does not claim that
+an email was delivered. Manual archive files are written after commit under
+ignored `data/archives`, never over the source attendance sheets.
+
+The `Attendance regression tests` GitHub Actions workflow runs the local checks
+and the real Firestore emulator suite against `demo-attendance`, without live
+Firebase credentials or deployment. Its outcome must be checked before merge;
+adding the workflow is not evidence that it has run or passed.

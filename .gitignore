@@ -7,7 +7,7 @@ coverage/
 .env*
 !.env.example
 
-data/
+/data/
 attendance_store.json
 *.sqlite
 *.sqlite-wal

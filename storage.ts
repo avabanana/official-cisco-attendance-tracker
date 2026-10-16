@@ -8,11 +8,32 @@ export interface StoreData {
   alerts: SecurityAlert[];
   settings: SecuritySettings;
   recentClicks: Record<string, { studentId: string; studentName: string; timestamp: number }>;
+  clubGoal?: { targetLaptops: number; sessionTarget: number };
+  hasBeenReset?: boolean;
+  customStudents?: any[];
+  adminTokens?: string[];
+  emailLogs?: any[];
 }
 export function emptyStore(): StoreData {
-  return { recordsByDate: {}, alerts: [], recentClicks: {}, settings: {
-    rapidThresholdSeconds: 20, strictMode: false, soundAlerts: true, kioskMode: true,
-  } };
+  return {
+    recordsByDate: {},
+    alerts: [],
+    recentClicks: {},
+    settings: {
+      rapidThresholdSeconds: 20,
+      strictMode: false,
+      soundAlerts: true,
+      kioskMode: true,
+    },
+    clubGoal: {
+      targetLaptops: 2500,
+      sessionTarget: 50,
+    },
+    hasBeenReset: false,
+    customStudents: [],
+    adminTokens: [],
+    emailLogs: [],
+  };
 }
 
 // JSON payloads retain all existing fields and history without lossy conversion.

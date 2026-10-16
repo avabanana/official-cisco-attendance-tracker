@@ -32,7 +32,7 @@ export interface AttendanceRecord {
   checkedOutByClientId: string | null;
   isFlagged: boolean;
   flagReason?: string;
-  laptopsImaged: number; // Number of laptops imaged in this session
+  laptopsImaged?: number; // Number of laptops imaged in this session
   laptopLogs?: LaptopImageLog[]; // Detailed log of imaged laptops
   actualCheckoutTime?: string; // Original attempted checkout time if after 4:45 PM
   cutoffExceeded?: boolean; // True if student attempted checkout past 4:45 PM
@@ -98,7 +98,7 @@ export interface SecurityAlert {
   timestamp: number;
   date: string;
   timeFormatted: string;
-  type: 'DEVICE_REUSE' | 'UNUSUAL_ACTION' | 'LATE_CHECKOUT' | 'POST_415_CHECKOUT';
+  type: 'DEVICE_REUSE' | 'UNUSUAL_ACTION' | 'LATE_CHECKOUT' | 'POST_415_CHECKOUT' | 'RAPID_CHECKIN';
   severity: AlertSeverity;
   currentStudent: string;
   studentId?: string;

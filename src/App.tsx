@@ -187,30 +187,10 @@ export default function App() {
           map[rec.studentId] = rec;
         }
 
-        // Smart merge: never overwrite an active record with an empty/absent record
-        setRecordsMap((prev) => {
-          const merged: Record<string, AttendanceRecord> = { ...map };
-          const prevMap = prev as Record<string, AttendanceRecord>;
-          for (const sId of Object.keys(prevMap)) {
-            const prevRec = prevMap[sId];
-            if (!prevRec) continue;
-            const hasActivity = Boolean(
-              prevRec.clockInTime ||
-              prevRec.clockOutTime ||
-              (typeof prevRec.laptopsImaged === 'number' && prevRec.laptopsImaged > 0)
-            );
-            const incomingEmpty =
-              !merged[sId]?.clockInTime &&
-              (!merged[sId]?.laptopsImaged || merged[sId]?.laptopsImaged === 0);
-            if (hasActivity && incomingEmpty) {
-              merged[sId] = prevRec;
-            }
-          }
-          try {
-            localStorage.setItem(`club_records_${dateStr}`, JSON.stringify(merged));
-          } catch {}
-          return merged;
-        });
+        setRecordsMap(map);
+        try {
+          localStorage.setItem(`club_records_${dateStr}`, JSON.stringify(map));
+        } catch {}
         setIsConnected(true);
       }
     } catch (err) {
@@ -392,6 +372,9 @@ export default function App() {
       eventSource.addEventListener('day_reset', (e: MessageEvent) => {
         try {
           const payload = JSON.parse(e.data);
+          try {
+            localStorage.removeItem(`club_records_${payload.date}`);
+          } catch {}
           if (payload.date === selectedDate) {
             const map: Record<string, AttendanceRecord> = {};
             for (const rec of payload.records) {
@@ -408,6 +391,14 @@ export default function App() {
       eventSource.addEventListener('all_data_reset', (e: MessageEvent) => {
         try {
           const payload = JSON.parse(e.data);
+          try {
+            for (let i = 0; i < localStorage.length; i++) {
+              const k = localStorage.key(i);
+              if (k && k.startsWith('club_records_')) {
+                localStorage.removeItem(k);
+              }
+            }
+          } catch {}
           if (payload.records) {
             const map: Record<string, AttendanceRecord> = {};
             for (const rec of payload.records) {

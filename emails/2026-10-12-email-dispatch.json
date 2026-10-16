@@ -1,0 +1,18 @@
+{
+  "id": "email-1792030759877-hajzi",
+  "timestamp": 1792030759877,
+  "dateStr": "2026-10-12",
+  "recipient": "avasophianorgaard@gmail.com",
+  "subject": "Completed Club Attendance & Laptop Spreadsheet - 2026-10-12",
+  "status": "sent",
+  "method": "admin_manual_trigger",
+  "message": "Completed daily spreadsheet generated and successfully dispatched to avasophianorgaard@gmail.com (21 volunteers attended, 21 clocked out completed, 30.27 hrs hours, 44 laptops imaged).",
+  "csvFileName": "club_attendance_and_laptops_2026-10-12.csv",
+  "recordCount": 87,
+  "activeCount": 21,
+  "totalHours": "30.27 hrs",
+  "totalLaptops": 44,
+  "dispatchedAt": "2026-10-15T02:19:19.877Z",
+  "csvPreview": "Student Name,Status,Clock In Time,Clock Out Time,Duration,Laptops Imaged (Session),Flagged,Flag Reason,Date\n\"Abdalla, Hamza O\",\"Absent\",--,--,\"--\",0,\"No\",\"\",\"2026-10-12\"\n\"Agarwal, Ria\",\"Absent\",--,--,\"--\",0,\"No\",\"\",\"2026-10-12\"\n\"Agrawal, Ansh\",\"Absent\",--,--,\"--\",0,\"No\",\"\",\"2026-10-12\"\n\"Anderson-Smith, Anna\",\"Completed\",03:04 PM,04:32 PM,\"1h 28m\",2,\"No\",\"\",\"2026-10-12\"\n\"Arakawa, Sota\",\"Completed\",03:02 PM,04:40 PM,\"1h 38m\",4,\"No\",\"\",\"2026-10-12\"\n\"Ashbaugh, Connor\",\"Absent\",--,--,\"--\",0,\"No\",\"\",\"2026-10-12\"\n\"Atofau, Christopher J\",\"Absent\",--,--,\"--\",0,\"No\",\"\",\"2026-10-12\"\n\"Baum, Cameron J\",\"Absent\",--,--,\"--\",0,\"No\",\"\",\"2026-10-12\"\n\"Bharadwaj, Vedavit\",\"Completed\",03:09 PM,04:35 PM,\"1h 26m\",2,\"No\",\"\",\"2026-10-12\"\n\"Biswas, Ar\",\"Absent\",--,--,\"--\",0,\"No\",\"\",\"2026-10-12\"\n\"Burger, Alexander\",\"Absent\",--,--,\"--\",0,\"No\",\"\",\"2026-10-12\"\n\"Canul, Alfredo\",\"Absent\",--,--,\"--\",0,\"No\",\"\",\"2026-10-12\"\n\"Chen, Logan\",\"Absent\",--,--,\"--\",0,\"No\",\"\",\"2026-10-12\"\n\"Chen, Ryan\",\"Absent\",--,--,\"--\",0,\"No\",\"\",\"2026-10-12\"\n\"Chettiar, Nikhil\",\"Absent\",--,--,\"--\",0,\"No\",\"\",\"2026-10-12\"\n\"Coates Robertson, Henry\",\"Absent\",--,--,\"--\",0,\"No\",\"\",\"2026-10-12\"\n\"Dasan, Pranav\",\"Absent\",--,--,\"--\",0,\"No\",\"\",\"2026-10-12\"\n\"Davalbhakta, Aarush\",\"Absent\",--,--,\"--\",0,\"No\",\"\",\"2026-10-12\"\n\"De Celle, Luke O\",\"Absent\",--,--,\"--\",0,\"No\",\"\",\"2026-10-12\"\n\"Deniel, Enzo\",\"Completed\",03:05 PM,04:42 PM,\"1h 37m\",3,\"No\",\"\",\"2026-10-12\"\n\"Duriseti, S\",\"Absent\",--,--,\"--\",0,\"No\",\"\",\"2026-10-12\"\n\"Fu, Niya\",\"Absent\",--,--,\"--\",0,\"",
+  "csvLength": 5673
+}

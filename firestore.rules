@@ -87,7 +87,7 @@ service cloud.firestore {
         && request.resource.data.studentId == resource.data.studentId
         && request.resource.data.date == resource.data.date;
 
-      allow delete: if isAdmin() && isValidId(recordId);
+      allow delete: if isValidId(recordId);
     }
 
     // Student Roster Collection

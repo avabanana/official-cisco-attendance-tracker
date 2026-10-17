@@ -10,6 +10,7 @@ export function canonical(value: any): any {
 }
 export function digest(value: unknown) { return crypto.createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex'); }
 export async function reconcile(db: ReturnType<typeof firebaseDatabase>, plan: any, planHash: string, apply: boolean) {
+  if (plan.quarantinedDocuments > 0) throw new Error('Resolve quarantined document identities and regenerate the plan before applying any corrections');
   if (plan.version !== 1 || !Array.isArray(plan.changes)) throw new Error('Unsupported correction plan');
   const groups = new Map<string, any[]>();
   const ids = new Set<string>();

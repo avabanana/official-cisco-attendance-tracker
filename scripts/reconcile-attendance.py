@@ -80,7 +80,7 @@ def main():
             except (ValueError,KeyError) as e:
                 stats['invalid']+=1;issues.append({'date':date,'row':index,'name':name,'issue':str(e)})
         report.append(stats)
-    plan={'version':1,'baseline':args.baseline,'baselineSha256':digest(snapshot),'sources':sources,'changes':changes,'issues':issues,'summary':report,
+    plan={'version':1,'quarantinedDocuments':len(snapshot.get('quarantinedRecords',[])),'baseline':args.baseline,'baselineSha256':digest(snapshot),'sources':sources,'changes':changes,'issues':issues,'summary':report,
       'notes':['No Firebase or source files were modified.','Files marked inaccurate/data lost are comparison-only and excluded from corrections.',
        'No data was inferred for October 13 or any other missing date.','Missing rows do not establish absence for people not listed in that sheet.',
        'Existing check-in/check-out history and laptop logs are retained. CSVs cannot reconstruct lost event/device history.',
@@ -90,7 +90,7 @@ def main():
     lines=['# Attendance reconciliation review','',f'Baseline: **{args.baseline}**. This is not a claim about live Firebase data.','',
       '| Date | CSV rows | Attended | Differences | Unmatched | Invalid | Correction policy |','|---|---:|---:|---:|---:|---:|---|']
     for s in report:lines.append(f"| {s['date']} | {s['rows']} | {s['attended']} | {s['changed']} | {s['unmatched']} | {s['invalid']} | {'Review only: inaccurate source' if s['uncertain'] else 'Proposed corrections'} |")
-    lines+=['',f'Proposed record corrections: **{len(changes)}**. Unresolved rows: **{len(issues)}**.','']+plan['notes']
+    lines+=['',f"Live documents requiring identity review: **{len(snapshot.get('quarantinedRecords',[]))}**. No correction plan may be applied until these are resolved.",'',f'Proposed record corrections: **{len(changes)}**. Unresolved rows: **{len(issues)}**.','']+plan['notes']
     lines+=['','The October 12 filename says “missing 10-13”; it supplies evidence for October 12 only.','',f'Plan file SHA-256: `{hashlib.sha256(target.read_bytes()).hexdigest()}`']
     (out/'REVIEW.md').write_text('\n'.join(lines)+'\n')
     print(json.dumps({'plan':str(target),'corrections':len(changes),'unresolved':len(issues),'dates':len(report)}))

@@ -152,3 +152,10 @@ The `Attendance regression tests` GitHub Actions workflow runs the local checks
 and the real Firestore emulator suite against `demo-attendance`, without live
 Firebase credentials or deployment. Its outcome must be checked before merge;
 adding the workflow is not evidence that it has run or passed.
+
+Read-only exports preserve every attendance document with its original Firestore
+ID in `rawRecords`. Invalid/mismatched identities are also listed in
+`quarantinedRecords` rather than aborting the export, guessing IDs, or replacing
+a valid record with a legacy alias. Archived generations remain in the raw
+export. CSV plans flag these unresolved documents and refuse application until
+the identity issues have been reviewed and a new plan generated.

@@ -29,7 +29,14 @@ def main():
     identities=collections.defaultdict(set)
     for records in days.values():
         for r in records.values(): identities[normalize(r['studentName'])].add(r['studentId'])
-    report=[];changes=[];sources=[];issues=[]
+    policy=json.loads((pathlib.Path(__file__).resolve().parent.parent/'src/data/identity-policy.json').read_text())
+    confirmed={normalize(name):id for name,id in policy['confirmedCsvIds'].items()}
+    ignored={normalize(name) for name in policy['ignoredCsvNames']}
+    known_ids={r['studentId'] for day in days.values() for r in day.values()}
+    if any(id not in known_ids for id in confirmed.values()):
+        # Policies for identities absent from a test or partial snapshot are not applied there.
+        confirmed={name:id for name,id in confirmed.items() if id in known_ids}
+    report=[];changes=[];sources=[];issues=[];ignored_rows=[]
     for file in sorted(pathlib.Path(args.csv_dir).rglob('*.csv'),key=lambda p:p.name):
         match=re.search(r'\d{4}-\d{2}-\d{2}',file.name)
         if not match: continue
@@ -40,7 +47,11 @@ def main():
         stats={'date':date,'file':file.name,'rows':len(rows),'uncertain':uncertain,'changed':0,'unmatched':0,'invalid':0,'attended':0}
         seen=set()
         for index,row in enumerate(rows,2):
-            name=row['Student Name']; matches=identities[normalize(name)]
+            name=row['Student Name']
+            if normalize(name) in ignored:
+                ignored_rows.append({'date':date,'row':index,'name':name,'reason':'User-confirmed erroneous duplicate; correct Canul row retained'})
+                continue
+            matches={confirmed[normalize(name)]} if normalize(name) in confirmed else identities[normalize(name)]
             if len(matches)!=1:
                 stats['unmatched']+=1;issues.append({'date':date,'row':index,'name':name,'issue':'No unique exact roster identity; no fuzzy match applied'});continue
             id=next(iter(matches))
@@ -93,7 +104,7 @@ def main():
             except (ValueError,KeyError) as e:
                 stats['invalid']+=1;issues.append({'date':date,'row':index,'name':name,'issue':str(e)})
         report.append(stats)
-    plan={'version':1,'quarantinedDocuments':len(snapshot.get('quarantinedRecords',[])),'baseline':args.baseline,'baselineSha256':digest(snapshot),'sources':sources,'changes':changes,'issues':issues,'summary':report,
+    plan={'version':1,'quarantinedDocuments':len(snapshot.get('quarantinedRecords',[])),'confirmedIdentityPolicy':policy,'ignoredRows':ignored_rows,'baseline':args.baseline,'baselineSha256':digest(snapshot),'sources':sources,'changes':changes,'issues':issues,'summary':report,
       'notes':['No Firebase or source files were modified.','Files marked inaccurate/data lost are comparison-only and excluded from corrections.',
        'No data was inferred for October 13 or any other missing date.','Missing rows do not establish absence for people not listed in that sheet.',
        'Existing check-in/check-out history and laptop logs are retained. CSVs cannot reconstruct lost event/device history.',
@@ -103,7 +114,7 @@ def main():
     lines=['# Attendance reconciliation review','',f'Baseline: **{args.baseline}**. Comparison reflects the exported snapshot, not subsequent live changes.','',
       '| Date | CSV rows | Valid matched attendees | Differences | Unmatched | Invalid | Correction policy |','|---|---:|---:|---:|---:|---:|---|']
     for s in report:lines.append(f"| {s['date']} | {s['rows']} | {s['attended']} | {s['changed']} | {s['unmatched']} | {s['invalid']} | {'Review only: inaccurate source' if s['uncertain'] else 'Proposed corrections'} |")
-    lines+=['',f"Live documents requiring identity review: **{len(snapshot.get('quarantinedRecords',[]))}**. No correction plan may be applied until these are resolved.",'',f'Proposed record corrections: **{len(changes)}**. Unresolved rows: **{len(issues)}**.','']+plan['notes']
+    lines+=['',f"Live documents requiring identity review: **{len(snapshot.get('quarantinedRecords',[]))}**. No correction plan may be applied until these are resolved.",'',f'User-confirmed erroneous duplicate rows excluded: **{len(ignored_rows)}**.',f'Proposed record corrections: **{len(changes)}**. Unresolved rows: **{len(issues)}**.','']+plan['notes']
     lines+=['','The October 12 filename says “missing 10-13”; it supplies evidence for October 12 only.','',f'Plan file SHA-256: `{hashlib.sha256(target.read_bytes()).hexdigest()}`']
     (out/'REVIEW.md').write_text('\n'.join(lines)+'\n')
     print(json.dumps({'plan':str(target),'corrections':len(changes),'unresolved':len(issues),'dates':len(report)}))

@@ -73,4 +73,21 @@ test('Firestore emulator: committed history, concurrent writers, failed transact
   assert.equal((await db.doc(`attendance_reconciliations/test-approved-plan/records/${current.id}`).get()).data()!.before.laptopsImaged,0);
   assert.equal((await reconcile(db,plan,'test-approved-plan',true)).corrected,0);
   await assert.rejects(reconcile(db,plan,'different-plan',true),/Conflict/);
+  const {identityRepairs,applyIdentityRepairs}=await import('../scripts/repair-confirmed-identities.ts');
+  const identityDate='2026-10-13';
+  const alias={...blank(identityDate,{id:'storment-isaac',name:'Storment, Isaac',firstName:'Isaac',lastName:'Storment'}),
+    status:'completed',durationMinutes:88,laptopsImaged:3,storageGeneration:'reset-test-generation'};
+  const canonical={...blank(identityDate,{id:'storment',name:'Storment, Isaac',firstName:'Isaac',lastName:'Storment'}),storageGeneration:'reset-test-generation'};
+  await db.doc(`attendance_records/${alias.id}`).set(alias);
+  await db.doc(`attendance_records/${canonical.id}`).set(canonical);
+  const repairs=identityRepairs({recordsByDate:{[identityDate]:{'storment-isaac':alias,storment:canonical}}});
+  assert.equal((await applyIdentityRepairs(db,repairs,false)).merged,0);
+  assert.equal((await db.doc(`attendance_records/${alias.id}`).get()).exists,true);
+  assert.equal((await applyIdentityRepairs(db,repairs,true)).merged,1);
+  assert.equal((await db.doc(`attendance_records/${alias.id}`).get()).exists,false);
+  assert.equal((await db.doc(`attendance_records/${canonical.id}`).get()).data()!.durationMinutes,88);
+  assert.equal((await db.doc(`attendance_records/${canonical.id}`).get()).data()!.laptopsImaged,3);
+  assert.equal((await applyIdentityRepairs(db,repairs,true)).merged,0);
+  await assert.rejects(applyIdentityRepairs(db,[{...repairs[0],source:{...alias,laptopsImaged:4}}],true),/changed since export/);
+
 });

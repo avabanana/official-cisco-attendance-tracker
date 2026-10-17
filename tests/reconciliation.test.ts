@@ -41,3 +41,24 @@ test('CSV comparison preserves equivalent time formatting and real millisecond p
   const plan=JSON.parse(fs.readFileSync(path.join(folder,'out/correction-plan.json'),'utf8'));
   assert.equal(plan.changes.length,0);
 });
+
+test('confirmed identity policy ignores erroneous Alfredo rows rather than erasing correct attendance',t=>{
+  const folder=fs.mkdtempSync(path.join(os.tmpdir(),'reconcile-identity-test-'));
+  t.after(()=>fs.rmSync(folder,{recursive:true,force:true}));
+  const input=path.join(folder,'input');fs.mkdirSync(input);
+  fs.writeFileSync(path.join(input,'attendance_2026-10-05.csv'),
+    'Student Name,Status,Clock In Time,Clock Out Time,Duration,Laptops Imaged (Session),Flagged Proxy Alert,Flag Reason\n'+
+    '"Canuel, Alfredo",Absent,,,,0,No,\n'+
+    '"Canul, Alfredo",Clocked Out (Completed),3:00 PM,4:00 PM,1.00 hrs,0,No,\n'+
+    '"Storment, Isaac",Absent,,,,0,No,\n');
+  const baseline={recordsByDate:{'2026-10-05':{
+    'canul-alfredo':{id:'2026-10-05_canul-alfredo',date:'2026-10-05',studentId:'canul-alfredo',studentName:'Canul, Alfredo',status:'completed',
+      clockInTime:'3:00 PM',clockOutTime:'4:00 PM',clockInTimestamp:Date.parse('2026-10-05T22:00:00Z'),clockOutTimestamp:Date.parse('2026-10-05T23:00:00Z'),durationMinutes:60,laptopsImaged:0,isFlagged:false},
+    storment:{id:'2026-10-05_storment',date:'2026-10-05',studentId:'storment',studentName:'Storment, Isaac',status:'absent',laptopsImaged:0,isFlagged:false},
+    'storment-isaac':{id:'2026-10-05_storment-isaac',date:'2026-10-05',studentId:'storment-isaac',studentName:'Storment, Isaac',status:'absent'}
+  }}};
+  const source=path.join(folder,'baseline.json');fs.writeFileSync(source,JSON.stringify(baseline));
+  const result=spawnSync('python3',['scripts/reconcile-attendance.py','--csv-dir',input,'--snapshot',source,'--out',path.join(folder,'out')]);
+  assert.equal(result.status,0,result.stderr.toString());const plan=JSON.parse(fs.readFileSync(path.join(folder,'out/correction-plan.json'),'utf8'));
+  assert.equal(plan.ignoredRows.length,1);assert.equal(plan.issues.length,0);assert.equal(plan.changes.length,0);
+});

@@ -1,4 +1,5 @@
 import express from 'express';
+import identityPolicy from './src/data/identity-policy.json';
 import fs from 'node:fs';
 import path from 'path';
 import crypto from 'crypto';
@@ -563,6 +564,7 @@ app.post('/api/roster/add', route((req, res) => {
     trimmedLast && trimmedFirst
       ? `${trimmedLast}, ${trimmedFirst}`
       : trimmedLast || trimmedFirst;
+  if (identityPolicy.ignoredCsvNames.some(name => name.toLowerCase() === formattedName.toLowerCase())) return res.status(400).json({ error: 'That name was an erroneous duplicate. Use the existing Canul, Alfredo record.' });
 
   const allStudents = getAllStudents();
   if (allStudents.some((s) => s.name.toLowerCase() === formattedName.toLowerCase())) {

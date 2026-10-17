@@ -164,3 +164,32 @@ the identity issues have been reviewed and a new plan generated.
 CSV comparison treats leading-zero time formatting as equivalent and preserves
 existing millisecond event timestamps when the CSV represents the same second.
 It never truncates genuine event precision merely to reproduce export formatting.
+
+## Confirmed duplicate identities
+
+`src/data/identity-policy.json` records the user's confirmed identities. The
+erroneous absent CSV rows for Canuel, Alfredo are ignored; they must never reset
+the separate, correct Canul, Alfredo row. Isaac Storment's canonical ID is
+`storment`; `storment-isaac` is an extra ID for the same volunteer.
+
+Before deploying the single-entry roster, use a fresh reviewed snapshot to
+verify the specific identity transfer in an authorized Cloud Shell:
+
+```sh
+npx tsx scripts/repair-confirmed-identities.ts ../attendance-snapshot.json
+```
+
+The user authorized removing the erroneous duplicate and combining Isaac's
+identities. Execute only this confirmed repair with:
+
+```sh
+npx tsx scripts/repair-confirmed-identities.ts ../attendance-snapshot.json --apply-confirmed-identities
+```
+
+This transfers the complete alias session into an empty canonical record,
+archives both originals in the same transaction, and removes only the extra
+attendance document. It refuses conflicting or changed records and is safe to
+rerun. It does not apply CSV corrections, remove test data, or deploy the app.
+The supplied live snapshot contains no Canuel roster/attendance document to
+delete. Keep Canul's legitimate attendance intact. A fresh export after the
+repair is needed to prepare the remaining data corrections.

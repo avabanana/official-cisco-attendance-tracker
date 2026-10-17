@@ -1,16 +1,20 @@
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
-import type { AttendanceRecord, SecurityAlert, SecuritySettings } from './src/types.ts';
+import type { AttendanceRecord, SecurityAlert, SecuritySettings, Student, ClubGoalSettings } from './src/types.ts';
 
 export interface StoreData {
+  customStudents?: Student[];
+  clubGoal?: ClubGoalSettings;
+  adminSessions?: Record<string, number>;
+  deviceBindings?: Record<string, string>;
+  activeGeneration?: string;
+  auditLog?: Array<Record<string, unknown>>;
   recordsByDate: Record<string, Record<string, AttendanceRecord>>;
   alerts: SecurityAlert[];
   settings: SecuritySettings;
   recentClicks: Record<string, { studentId: string; studentName: string; timestamp: number }>;
-  clubGoal?: { targetLaptops: number; sessionTarget: number };
   hasBeenReset?: boolean;
-  customStudents?: any[];
   adminTokens?: string[];
   emailLogs?: any[];
 }
@@ -101,7 +105,7 @@ function validateLegacy(value: any) {
           typeof r.studentName !== 'string' || !['absent','checked_in','completed'].includes(r.status) ||
           (r.history !== undefined && !Array.isArray(r.history))) throw new Error(`Invalid attendance record for ${date}/${studentId}`);
       for (const entry of r.history || []) {
-        if (!object(entry) || !['check_in','check_out','reset'].includes(entry.action) ||
+        if (!object(entry) || !['check_in','check_out','reset','laptop_update','exception_grant','admin_edit','csv_reconcile'].includes(entry.action) ||
             typeof entry.timestamp !== 'number' || !Number.isFinite(entry.timestamp) ||
             typeof entry.timeFormatted !== 'string' || typeof entry.clientId !== 'string') {
           throw new Error(`Invalid history for ${date}/${studentId}`);

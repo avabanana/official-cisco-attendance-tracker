@@ -44,6 +44,7 @@ import { getFriendlyClientId } from '../utils/clientId';
 import { useFirebase } from '../context/FirebaseContext';
 
 interface AdminDashboardProps {
+  getAdminHeaders: () => Record<string, string>;
   roster: Student[];
   recordsMap: Record<string, AttendanceRecord>;
   alerts: SecurityAlert[];
@@ -103,6 +104,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onClearAlerts,
   onResetStudent,
   onCheckIn,
+  getAdminHeaders,
   onCheckOut,
   loadingStates = {},
   onAdjustRecord,
@@ -167,7 +169,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     try {
       const res = await fetch('/api/admin/send-email', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAdminHeaders(),
         body: JSON.stringify({ date: selectedDate }),
       });
       const data = await res.json();
@@ -219,7 +221,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     setSyncStatusMsg(null);
     const result = await syncFullStoreToFirestore();
     if (result.success) {
-      setSyncStatusMsg(`Successfully retained ${result.count} records across all sessions in Firebase Firestore!`);
+      setSyncStatusMsg(`Verified ${result.count} records in the authoritative Firestore database. No records were uploaded or changed.`);
     } else {
       setSyncStatusMsg(result.error || 'Sync failed');
     }
@@ -497,12 +499,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   Firebase Cloud Backend & Data Retention
                   <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                    Active
+                    {isFirebaseAvailable ? 'Verified' : 'Unverified'}
                   </span>
                 </h4>
               </div>
               <p className="text-xs text-indigo-200/80 max-w-2xl">
-                Attendance records across all 16 sessions, custom volunteers, and imaging history are persistently secured and retained in Google Cloud Firestore.
+                Attendance is saved through server transactions. Use Verify Firebase Storage to check the current database connection; this does not upload or change records.
               </p>
               <div className="flex flex-wrap items-center gap-3 pt-1 text-[11px] text-slate-300 font-mono">
                 <span>Database: <strong className="text-white font-mono">ai-studio-clubattendancetr-...</strong></span>
@@ -511,7 +513,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 {lastSyncedAt && (
                   <>
                     <span>•</span>
-                    <span className="text-indigo-200">Last Synced: {lastSyncedAt.toLocaleTimeString()}</span>
+                    <span className="text-indigo-200">Last Verified: {lastSyncedAt.toLocaleTimeString()}</span>
                   </>
                 )}
               </div>
@@ -536,7 +538,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   type="button"
                   onClick={signInWithGoogle}
                   className="flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-900 rounded-lg text-xs font-semibold shadow-xs transition-all cursor-pointer"
-                  title="Sign in with Google to synchronize with Firestore"
+                  title="Optional Google sign-in; attendance is saved by the server"
                 >
                   <LogIn className="w-3.5 h-3.5 text-indigo-600" />
                   <span>Sign In with Google</span>
@@ -550,7 +552,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 className="flex items-center gap-1.5 px-3.5 py-1.5 bg-indigo-500 hover:bg-indigo-600 active:scale-[0.98] disabled:opacity-50 text-white rounded-lg text-xs font-semibold shadow-xs transition-all cursor-pointer"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-                <span>{isSyncing ? 'Syncing...' : 'Sync All 16 Sessions to Firebase'}</span>
+                <span>{isSyncing ? 'Verifying...' : 'Verify Firebase Storage'}</span>
               </button>
             </div>
           </div>
@@ -562,7 +564,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           )}
         </div>
 
-        {/* Automated 5:00 PM Daily Spreadsheet Email System */}
+        {/* Daily Spreadsheet Export System */}
         <div className="mt-5 p-5 rounded-2xl bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 text-white border border-indigo-700/60 shadow-md">
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
             <div className="space-y-2 flex-1">
@@ -573,11 +575,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <div>
                   <div className="flex items-center gap-2">
                     <h3 className="text-base font-bold text-white tracking-tight">
-                      Automated 5:00 PM Daily Spreadsheet Email
+                      Daily Spreadsheet Export
                     </h3>
                     <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                      Active & Monitored
+                      Email not configured
                     </span>
                   </div>
                   <p className="text-xs text-indigo-200/90 mt-0.5">

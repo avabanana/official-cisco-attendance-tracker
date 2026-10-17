@@ -1,17 +1,13 @@
 import express from 'express';
+import identityPolicy from './src/data/identity-policy.json';
 import fs from 'node:fs';
 import path from 'path';
 import crypto from 'crypto';
 import { createServer as createViteServer } from 'vite';
-import { initializeApp as initFirebaseApp } from 'firebase/app';
-import {
-  getFirestore as getFirebaseFirestore,
-  collection as fbCollection,
-  doc as fbDoc,
-  setDoc as fbSetDoc,
-  getDocs as fbGetDocs,
-} from 'firebase/firestore';
-import { AttendanceDatabase, type StoreData } from './storage.ts';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { FirestorePersistence, LocalPersistence, firebaseDatabase, type Persistence } from './server/persistence.ts';
+import { checkIn, checkOut, history as appendHistory } from './server/attendance.ts';
+import { type StoreData } from './storage.ts';
 import { CLUB_ROSTER } from './src/data/roster.ts';
 import {
   AttendanceRecord,
@@ -26,230 +22,68 @@ import {
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
 const PACIFIC_TIMEZONE = 'America/Los_Angeles';
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'Anteater7202';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
+const storageMode = process.env.ATTENDANCE_STORAGE || 'firestore';
+if (storageMode !== 'firestore' && storageMode !== 'sqlite') throw new Error('Invalid ATTENDANCE_STORAGE');
+if (process.env.K_SERVICE && storageMode !== 'firestore') throw new Error('Cloud Run requires Firestore; refusing ephemeral SQLite storage');
 
 app.use(express.json());
 
 // -------------------------------------------------------------
-// SQLite Storage Initialization (Atomic + Crash-Resilient)
-// -------------------------------------------------------------
-const dbPath = process.env.ATTENDANCE_DB_PATH || path.join(process.cwd(), 'data', 'attendance.sqlite');
-const database = new AttendanceDatabase(dbPath);
-
-// Safely initialize if database is uninitialized
-if (!database.isInitialized()) {
-  const legacyPath = path.join(process.cwd(), 'attendance_store.json');
-  if (fs.existsSync(legacyPath) && !process.env.ATTENDANCE_DB_PATH) {
-    try {
-      database.importLegacy(legacyPath);
-      console.log('[STORAGE] Imported existing attendance_store.json into SQLite database');
-    } catch (err) {
-      console.warn('[STORAGE] Legacy import fallback to empty store:', err);
-      database.transaction(() => {});
-    }
-  } else {
-    database.transaction(() => {});
-  }
+// Firestore is authoritative. SQLite is an explicitly selected local/test backend only.
+// No legacy import, seed data, backup merge, or attendance writes run at startup.
+const database: Persistence = storageMode === 'firestore'
+  ? new FirestorePersistence(firebaseDatabase())
+  : new LocalPersistence(process.env.ATTENDANCE_DB_PATH || path.join(process.cwd(), 'data', 'attendance.sqlite'));
+const requestStorage = new AsyncLocalStorage<{ store: StoreData; events: Array<[string, any]>; afterCommit: Array<() => void> }>();
+function state(): StoreData {
+  const context = requestStorage.getStore();
+  if (!context) throw new Error('Attendance operation outside transaction');
+  return context.store;
 }
-
-let store: StoreData;
-let pendingEvents: Array<[string, any]> | null = null;
-let pendingRecordsToSync: AttendanceRecord[] = [];
-
-// -------------------------------------------------------------
-// Firebase Firestore Integration (Cloud Backup & Persistence)
-// -------------------------------------------------------------
-let firestoreDb: any = null;
-let lastFirestoreSyncTimestamp: number | null = null;
-let totalFirestoreSyncedCount = 0;
-
-try {
-  const firebaseConfigPath = path.join(process.cwd(), 'firebase-applet-config.json');
-  if (fs.existsSync(firebaseConfigPath)) {
-    const cfg = JSON.parse(fs.readFileSync(firebaseConfigPath, 'utf8'));
-    const fbApp = initFirebaseApp(cfg, 'server-firestore-app');
-    firestoreDb = getFirebaseFirestore(fbApp, cfg.firestoreDatabaseId);
-    console.log('[FIREBASE] Firestore connected for server backup, db:', cfg.firestoreDatabaseId);
-  }
-} catch (err) {
-  console.warn('[FIREBASE] Firestore server init warning:', err);
-}
-
-async function syncRecordToFirestore(rec: AttendanceRecord) {
-  if (!firestoreDb) return;
-  try {
-    const cleanRecord = {
-      id: rec.id,
-      studentId: rec.studentId,
-      studentName: rec.studentName,
-      date: rec.date,
-      status: rec.status,
-      clockInTime: rec.clockInTime || null,
-      clockInTimestamp: rec.clockInTimestamp || null,
-      clockOutTime: rec.clockOutTime || null,
-      clockOutTimestamp: rec.clockOutTimestamp || null,
-      durationMinutes: typeof rec.durationMinutes === 'number' ? rec.durationMinutes : null,
-      laptopsImaged: typeof rec.laptopsImaged === 'number' ? rec.laptopsImaged : 0,
-      isFlagged: Boolean(rec.isFlagged),
-      flagReason: rec.flagReason || null,
-    };
-    await fbSetDoc(fbDoc(firestoreDb, 'attendance_records', rec.id), cleanRecord, { merge: true });
-    lastFirestoreSyncTimestamp = Date.now();
-  } catch (err) {
-    // Non-blocking catch to ensure offline resilience
-  }
-}
-
-async function backupAllToFirestore(): Promise<{ backedUp: number; total: number }> {
-  if (!firestoreDb) return { backedUp: 0, total: 0 };
-  let count = 0;
-  let total = 0;
-  const currentStore = database.transaction((s) => s);
-  for (const day of Object.values(currentStore.recordsByDate || {})) {
-    for (const rec of Object.values(day)) {
-      total++;
-      if (
-        rec.clockInTime ||
-        rec.clockOutTime ||
-        (rec.durationMinutes && rec.durationMinutes > 0) ||
-        (rec.laptopsImaged && rec.laptopsImaged > 0)
-      ) {
-        await syncRecordToFirestore(rec);
-        count++;
-      }
-    }
-  }
-  totalFirestoreSyncedCount = count;
-  lastFirestoreSyncTimestamp = Date.now();
-  console.log(`[FIREBASE] Complete backup synced ${count} active records to Firestore`);
-  return { backedUp: count, total };
-}
-
-async function syncFromFirestore(): Promise<number> {
-  if (!firestoreDb) return 0;
-  try {
-    const snap = await fbGetDocs(fbCollection(firestoreDb, 'attendance_records'));
-    let merged = 0;
-    database.transaction((current) => {
-      snap.forEach((d) => {
-        const data = d.data() as Partial<AttendanceRecord>;
-        if (data.date && data.studentId && data.id) {
-          if (!current.recordsByDate[data.date]) {
-            current.recordsByDate[data.date] = Object.create(null);
-          }
-          const day = current.recordsByDate[data.date];
-          const existing = day[data.studentId];
-          if (!existing || (!existing.clockInTime && data.clockInTime)) {
-            const fallback: AttendanceRecord = {
-              id: data.id,
-              date: data.date,
-              studentId: data.studentId,
-              studentName: data.studentName || data.studentId,
-              clockInTime: null,
-              clockInTimestamp: null,
-              clockOutTime: null,
-              clockOutTimestamp: null,
-              durationMinutes: null,
-              status: 'absent',
-              checkedInByClientId: null,
-              checkedOutByClientId: null,
-              isFlagged: false,
-              laptopsImaged: 0,
-              history: [],
-            };
-            const base = existing || fallback;
-            day[data.studentId] = {
-              ...base,
-              ...data,
-              clockInTime: data.clockInTime ?? base.clockInTime,
-              clockInTimestamp: data.clockInTimestamp ?? base.clockInTimestamp,
-              clockOutTime: data.clockOutTime ?? base.clockOutTime,
-              clockOutTimestamp: data.clockOutTimestamp ?? base.clockOutTimestamp,
-              status: (data.status as any) || 'completed',
-              durationMinutes:
-                typeof data.durationMinutes === 'number'
-                  ? data.durationMinutes
-                  : base.durationMinutes,
-              laptopsImaged:
-                typeof data.laptopsImaged === 'number'
-                  ? data.laptopsImaged
-                  : base.laptopsImaged ?? 0,
-            };
-            merged++;
-          }
-        }
-      });
-    });
-    if (merged > 0) {
-      console.log(`[FIREBASE] Merged ${merged} records from Firestore into SQLite store`);
-    }
-    return merged;
-  } catch (err) {
-    console.warn('[FIREBASE] Sync from Firestore warning:', err);
-    return 0;
-  }
-}
-
-// -------------------------------------------------------------
-// Transactional Route Wrapper with Proxy Buffering
-// -------------------------------------------------------------
+const allDatePaths = new Set(['/api/laptops/summary', '/api/laptops/update', '/api/store-dump', '/api/reset-all-data', '/api/firebase/backup-now', '/api/firebase/status']);
+const publicWrites = new Set(['/api/checkin', '/api/checkout', '/api/admin/verify', '/api/admin/logout']);
 function route(handler: express.RequestHandler): express.RequestHandler {
-  return (req, res, next) => {
-    let response: { kind: 'json' | 'send'; body: any } | undefined;
-    const buffered = new Proxy(res, {
-      get(target, property) {
-        if (property === 'json' || property === 'send') {
-          return (body: any) => {
-            response = { kind: property, body };
-            return buffered;
-          };
-        }
-        if (property === 'status') {
-          return (code: number) => {
-            target.statusCode = code;
-            return buffered;
-          };
-        }
-        const value = Reflect.get(target, property);
-        return typeof value === 'function' ? value.bind(target) : value;
-      },
-    });
-
-    pendingEvents = [];
-    pendingRecordsToSync = [];
-
+  return async (req, res, next) => {
+    const date = req.body?.date ?? req.query.date ?? getTodayDateString();
+    if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+        !Number.isFinite(Date.parse(date)) || new Date(date).toISOString().slice(0,10) !== date) {
+      res.status(400).json({ error: 'Invalid attendance date' }); return;
+    }
     try {
-      database.transaction((current) => {
-        store = current;
-        handler(req, buffered, next);
-      });
-
-      const events = pendingEvents;
-      const recordsToSync = pendingRecordsToSync;
-      pendingEvents = null;
-      pendingRecordsToSync = [];
-
-      for (const [type, data] of events) {
-        broadcast(type, data);
-      }
-
-      // Background async backup to Firestore for any changed records
-      if (recordsToSync.length > 0 && firestoreDb) {
-        for (const rec of recordsToSync) {
-          syncRecordToFirestore(rec).catch(() => {});
-        }
-      }
-
-      if (response) {
-        res[response.kind](response.body);
-      }
+      const committed = await database.transaction(allDatePaths.has(req.path) ? null : date, current => {
+        const context = { store: current, events: [] as Array<[string, any]>, afterCommit: [] as Array<() => void> };
+        return requestStorage.run(context, () => {
+          let response: { kind: 'json' | 'send'; body: any } | undefined;
+          let status = 200;
+          const headers: Record<string, string> = {};
+          const buffered = new Proxy(res, {
+            get(target, property) {
+              if (property === 'json' || property === 'send') return (body: any) => { response = { kind: property, body: structuredClone(body) }; return buffered; };
+              if (property === 'status') return (code: number) => { status = code; return buffered; };
+              if (property === 'setHeader') return (key: string, value: string) => { headers[key] = value; return buffered; };
+              const value = Reflect.get(target, property);
+              return typeof value === 'function' ? value.bind(target) : value;
+            },
+          });
+          const adminRequired = (req.method === 'POST' && !publicWrites.has(req.path)) || ['/api/store-dump','/api/email/status'].includes(req.path);
+          if (adminRequired && !checkAdminAuth(req)) {
+            buffered.status(401).json({ error: 'Unauthorized: Admin authentication required.' });
+          } else {
+            handler(req, buffered, next);
+          }
+          return { response, status, headers, events: context.events, afterCommit: context.afterCommit };
+        });
+      }, req.method !== 'GET' && req.path !== '/api/firebase/backup-now');
+      // Transaction callbacks may retry. Emit only the committed attempt's effects.
+      for (const [type, data] of committed.events) broadcast(type, data);
+      for (const effect of committed.afterCommit) { try { effect(); } catch (error) { console.error('Post-commit archive failed:', error); } }
+      for (const [key, value] of Object.entries(committed.headers)) res.setHeader(key, value);
+      res.status(committed.status);
+      if (committed.response) res[committed.response.kind](committed.response.body);
     } catch (error) {
-      pendingEvents = null;
-      pendingRecordsToSync = [];
-      console.error('Attendance operation failed:', error);
-      res.removeHeader('Content-Disposition');
-      res.setHeader('Content-Type', 'application/json');
-      res.status(503).json({ error: 'Attendance storage unavailable. Please retry.' });
+      console.error('Attendance storage transaction failed:', error);
+      res.status(503).json({ error: 'Attendance storage unavailable. No success was confirmed; reload and retry.' });
     }
   };
 }
@@ -260,8 +94,9 @@ function route(handler: express.RequestHandler): express.RequestHandler {
 const sseClients = new Set<express.Response>();
 
 function broadcast(eventType: string, data: any) {
-  if (pendingEvents) {
-    pendingEvents.push([eventType, structuredClone(data)]);
+  const context = requestStorage.getStore();
+  if (context) {
+    context.events.push([eventType, structuredClone(data)]);
     return;
   }
   const payload = `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -333,12 +168,13 @@ function formatTime(date: Date): string {
 function parseTimeString(timeStr: string): { hour: number; minute: number; second: number } | null {
   if (!timeStr) return null;
   // Matches "03:00 PM" or "15:00" or "09:00:00"
-  const match = timeStr.match(/(\d+):(\d+)(?::(\d+))?\s*(AM|PM)?/i);
+  const match = timeStr.trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?$/i);
   if (!match) return null;
   let hour = parseInt(match[1], 10);
   const minute = parseInt(match[2], 10);
   const second = match[3] ? parseInt(match[3], 10) : 0;
   const meridiem = match[4]?.toUpperCase();
+  if (minute > 59 || second > 59 || (meridiem ? hour < 1 || hour > 12 : hour > 23)) return null;
   if (meridiem === 'PM' && hour < 12) hour += 12;
   if (meridiem === 'AM' && hour === 12) hour = 0;
   return { hour, minute, second };
@@ -347,9 +183,10 @@ function parseTimeString(timeStr: string): { hour: number; minute: number; secon
 function getPacificTimestamp(dateStr: string, timeStr: string): number {
   const [year, month, day] = dateStr.split('-').map(Number);
   const parsed = parseTimeString(timeStr);
-  const hours = parsed ? parsed.hour : 16;
-  const minutes = parsed ? parsed.minute : 45;
-  const seconds = parsed ? parsed.second : 0;
+  if (!parsed) throw new Error('Invalid attendance time; no default time may be invented');
+  const hours = parsed.hour;
+  const minutes = parsed.minute;
+  const seconds = parsed.second;
 
   const guess = Date.UTC(year, month - 1, day, hours + 7, minutes, seconds);
   const formatter = new Intl.DateTimeFormat('en-US', {
@@ -376,7 +213,7 @@ function getPacificTimestamp(dateStr: string, timeStr: string): number {
 // Roster & Store Helpers
 // -------------------------------------------------------------
 function getAllStudents(): Student[] {
-  const custom = store?.customStudents || [];
+  const custom = state()?.customStudents || [];
   const map = new Map<string, Student>();
   for (const s of CLUB_ROSTER) {
     map.set(s.id, s);
@@ -388,10 +225,10 @@ function getAllStudents(): Student[] {
 }
 
 function initDayRecords(dateStr: string): Record<string, AttendanceRecord> {
-  if (!store.recordsByDate[dateStr]) {
-    store.recordsByDate[dateStr] = Object.create(null);
+  if (!state().recordsByDate[dateStr]) {
+    state().recordsByDate[dateStr] = Object.create(null);
   }
-  const dayRecords = store.recordsByDate[dateStr];
+  const dayRecords = state().recordsByDate[dateStr];
 
   for (const student of getAllStudents()) {
     if (!dayRecords[student.id]) {
@@ -427,7 +264,7 @@ function initDayRecords(dateStr: string): Record<string, AttendanceRecord> {
 
 function getStudentAllTimeLaptops(studentId: string): number {
   let total = 0;
-  for (const day of Object.values(store.recordsByDate || {})) {
+  for (const day of Object.values(state().recordsByDate || {})) {
     if (day && day[studentId] && typeof day[studentId].laptopsImaged === 'number') {
       total += day[studentId].laptopsImaged;
     }
@@ -437,7 +274,7 @@ function getStudentAllTimeLaptops(studentId: string): number {
 
 function getTotalClubLaptopsAllTime(): number {
   let total = 0;
-  for (const day of Object.values(store.recordsByDate || {})) {
+  for (const day of Object.values(state().recordsByDate || {})) {
     if (day) {
       for (const rec of Object.values(day)) {
         if (typeof rec.laptopsImaged === 'number') {
@@ -450,7 +287,7 @@ function getTotalClubLaptopsAllTime(): number {
 }
 
 function getSessionTotalLaptops(dateStr: string): number {
-  const day = store.recordsByDate[dateStr];
+  const day = state().recordsByDate[dateStr];
   if (!day) return 0;
   let total = 0;
   for (const rec of Object.values(day)) {
@@ -463,7 +300,7 @@ function getSessionTotalLaptops(dateStr: string): number {
 
 function getStudentAllTimeMinutes(studentId: string): number {
   let totalMinutes = 0;
-  for (const day of Object.values(store.recordsByDate || {})) {
+  for (const day of Object.values(state().recordsByDate || {})) {
     if (day && day[studentId]) {
       const rec = day[studentId];
       if (typeof rec.durationMinutes === 'number' && rec.durationMinutes > 0) {
@@ -476,7 +313,7 @@ function getStudentAllTimeMinutes(studentId: string): number {
 
 function getStudentSessionsAttendedCount(studentId: string): number {
   let count = 0;
-  for (const day of Object.values(store.recordsByDate || {})) {
+  for (const day of Object.values(state().recordsByDate || {})) {
     if (day && day[studentId]) {
       const rec = day[studentId];
       if (rec.clockInTime || (typeof rec.durationMinutes === 'number' && rec.durationMinutes > 0)) {
@@ -489,7 +326,7 @@ function getStudentSessionsAttendedCount(studentId: string): number {
 
 function getTotalClubMinutesAllTime(): number {
   let total = 0;
-  for (const day of Object.values(store.recordsByDate || {})) {
+  for (const day of Object.values(state().recordsByDate || {})) {
     if (day) {
       for (const rec of Object.values(day)) {
         if (typeof rec.durationMinutes === 'number' && rec.durationMinutes > 0) {
@@ -504,39 +341,22 @@ function getTotalClubMinutesAllTime(): number {
 // -------------------------------------------------------------
 // Admin Token Authentication
 // -------------------------------------------------------------
-const activeAdminTokens = new Set<string>();
-
+function tokenHash(token: string) { return crypto.createHash('sha256').update(token).digest('hex'); }
+function passwordMatches(password: unknown): boolean {
+  return !!ADMIN_PASSWORD && typeof password === 'string' && crypto.timingSafeEqual(Buffer.from(tokenHash(password)), Buffer.from(tokenHash(ADMIN_PASSWORD)));
+}
 function generateAdminToken(): string {
   const token = crypto.randomBytes(32).toString('hex');
-  activeAdminTokens.add(token);
-  if (!store.adminTokens) store.adminTokens = [];
-  store.adminTokens.push(token);
-  if (store.adminTokens.length > 50) store.adminTokens = store.adminTokens.slice(-50);
+  const sessions = state().adminSessions ||= {};
+  for (const [id, expiry] of Object.entries(sessions)) if (expiry <= Date.now()) delete sessions[id];
+  for (const [id] of Object.entries(sessions).sort((a,b)=>a[1]-b[1]).slice(0, Math.max(0,Object.keys(sessions).length-49))) delete sessions[id];
+  sessions[tokenHash(token)] = Date.now() + 8 * 3600_000;
   return token;
 }
-
 function checkAdminAuth(req: express.Request): boolean {
-  const tokenHeader = req.headers['x-admin-token'] as string | undefined;
-  const authHeader = req.headers['authorization'] as string | undefined;
-  let token = tokenHeader;
-  if (!token && authHeader && authHeader.startsWith('Bearer ')) {
-    token = authHeader.substring(7).trim();
-  }
-  const rawPw = req.headers['x-admin-password'] as string | undefined;
-  if (rawPw && rawPw === ADMIN_PASSWORD) {
-    return true;
-  }
-  if (token && (activeAdminTokens.has(token) || (store?.adminTokens && store.adminTokens.includes(token)))) {
-    return true;
-  }
-  return false;
-}
-
-function requireAdminAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
-  if (!checkAdminAuth(req)) {
-    return res.status(401).json({ error: 'Unauthorized: Admin authentication required.' });
-  }
-  next();
+  const token = req.headers['x-admin-token'];
+  return passwordMatches(req.headers['x-admin-password']) ||
+    (typeof token === 'string' && (state().adminSessions?.[tokenHash(token)] || 0) > Date.now());
 }
 
 // -------------------------------------------------------------
@@ -560,7 +380,7 @@ export interface EmailDispatchLog {
 
 function generateDayCsvContent(dateStr: string): string {
   initDayRecords(dateStr);
-  const day = store.recordsByDate[dateStr] || {};
+  const day = state().recordsByDate[dateStr] || {};
   const students = getAllStudents();
 
   const headers = [
@@ -621,7 +441,7 @@ function generateDayCsvContent(dateStr: string): string {
 
 function dispatchCompletedSpreadsheetEmail(dateStr: string, triggerMethod: string = 'manual'): EmailDispatchLog {
   const csvContent = generateDayCsvContent(dateStr);
-  const day = store.recordsByDate[dateStr] || {};
+  const day = state().recordsByDate[dateStr] || {};
   const activeRecords = Object.values(day).filter(
     (r) => r.clockInTime || (r.laptopsImaged && r.laptopsImaged > 0)
   );
@@ -640,9 +460,9 @@ function dispatchCompletedSpreadsheetEmail(dateStr: string, triggerMethod: strin
     dateStr,
     recipient,
     subject,
-    status: 'sent',
+    status: 'scheduled',
     method: triggerMethod,
-    message: `Completed daily spreadsheet generated and successfully dispatched to ${recipient} (${activeRecords.length} volunteers attended, ${completedRecords.length} clocked out completed, ${totalHoursStr} hours, ${totalLaptops} laptops imaged).`,
+    message: `Spreadsheet generated for ${recipient}; email delivery is not configured (${activeRecords.length} volunteers attended, ${completedRecords.length} clocked out completed, ${totalHoursStr} hours, ${totalLaptops} laptops imaged).`,
     csvFileName: `club_attendance_and_laptops_${dateStr}.csv`,
     recordCount: Object.keys(day).length,
     activeCount: activeRecords.length,
@@ -650,13 +470,14 @@ function dispatchCompletedSpreadsheetEmail(dateStr: string, triggerMethod: strin
     totalLaptops,
   };
 
-  store.emailLogs = store.emailLogs || [];
-  store.emailLogs.unshift(logEntry);
-  if (store.emailLogs.length > 50) store.emailLogs.pop();
+  state().emailLogs = state().emailLogs || [];
+  state().emailLogs.unshift(logEntry);
+  if (state().emailLogs.length > 50) state().emailLogs.pop();
 
+  requestStorage.getStore()!.afterCommit.push(() => {
   // Archive email dispatch file on disk
   try {
-    const emailsDir = path.join(process.cwd(), 'emails');
+    const emailsDir = path.join(process.cwd(), 'data', 'archives', 'emails');
     if (!fs.existsSync(emailsDir)) fs.mkdirSync(emailsDir, { recursive: true });
     const emailFile = path.join(emailsDir, `${dateStr}-email-dispatch.json`);
     fs.writeFileSync(
@@ -679,46 +500,22 @@ function dispatchCompletedSpreadsheetEmail(dateStr: string, triggerMethod: strin
 
   // Also save CSV to sheets/ directory
   try {
-    const sheetsDir = path.join(process.cwd(), 'sheets');
+    const sheetsDir = path.join(process.cwd(), 'data', 'archives', 'sheets');
     if (!fs.existsSync(sheetsDir)) fs.mkdirSync(sheetsDir, { recursive: true });
     fs.writeFileSync(path.join(sheetsDir, `${dateStr}.csv`), csvContent, 'utf-8');
   } catch {}
 
+  });
   broadcast('email_dispatched', logEntry);
   console.log(
-    `[EMAIL DISPATCH] Sent daily spreadsheet to ${recipient} for ${dateStr} (${activeRecords.length} active, ${totalLaptops} laptops, method: ${triggerMethod})`
+    `[SPREADSHEET EXPORT] Generated spreadsheet for ${recipient} for ${dateStr} (${activeRecords.length} active, ${totalLaptops} laptops, method: ${triggerMethod})`
   );
   return logEntry;
 }
 
 // Automated 5:00 PM Pacific check for weekdays (Mon, Tue, Thu, Fri - Wed excluded)
-function checkScheduledEmailDispatch() {
-  try {
-    const now = new Date();
-    const pacific = getPacificTimeParts(now);
-    const todayStr = getTodayDateString();
-    const dayOfWeek = getPacificDayOfWeek(now); // 0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat
+// Email delivery requires a configured transport; no timer mutates attendance or archives.
 
-    const isTargetWeekday = [1, 2, 4, 5].includes(dayOfWeek);
-    const is5PM = pacific.hour === 17 && pacific.minute === 0;
-
-    if (isTargetWeekday && is5PM) {
-      database.transaction((current) => {
-        store = current;
-        const alreadySent = (store.emailLogs || []).some(
-          (log) => log.dateStr === todayStr && log.status === 'sent' && Math.abs(log.timestamp - now.getTime()) < 3600000
-        );
-        if (!alreadySent) {
-          dispatchCompletedSpreadsheetEmail(todayStr, 'scheduled_5pm_cron');
-        }
-      });
-    }
-  } catch (err) {
-    console.warn('Scheduled email dispatch check error:', err);
-  }
-}
-
-setInterval(checkScheduledEmailDispatch, 30000);
 
 // -------------------------------------------------------------
 // API Routes
@@ -740,40 +537,22 @@ app.get('/api/events', (req, res) => {
 });
 
 // Admin Authentication endpoints
-app.post('/api/admin/verify', (req, res) => {
-  const { password } = req.body;
-  if (password === ADMIN_PASSWORD) {
-    let token = '';
-    database.transaction((current) => {
-      store = current;
-      token = generateAdminToken();
-    });
-    return res.json({ success: true, token });
-  }
-  return res.status(401).json({ error: 'Incorrect admin password. Access denied.' });
-});
-
-app.post('/api/admin/logout', (req, res) => {
-  const tokenHeader = req.headers['x-admin-token'] as string | undefined;
-  if (tokenHeader) {
-    activeAdminTokens.delete(tokenHeader);
-  }
+app.post('/api/admin/verify', route((req, res) => {
+  if (!ADMIN_PASSWORD) return res.status(503).json({ error: 'Admin password is not configured on the server' });
+  if (!passwordMatches(req.body.password)) return res.status(401).json({ error: 'Incorrect admin password. Access denied.' });
+  res.json({ success: true, token: generateAdminToken() });
+}));
+app.post('/api/admin/logout', route((req, res) => {
+  const token = req.headers['x-admin-token'];
+  if (typeof token === 'string') delete state().adminSessions?.[tokenHash(token)];
   res.json({ success: true });
-});
-
-// Get Roster
-app.get('/api/roster', (_req, res) => {
-  const currentStore = database.transaction((s) => s);
-  const custom = currentStore.customStudents || [];
-  const map = new Map<string, Student>();
-  for (const s of CLUB_ROSTER) map.set(s.id, s);
-  for (const s of custom) map.set(s.id, s);
-  res.json({ roster: Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name)) });
-});
+}));
+app.get('/api/roster', route((_req, res) => { res.json({ roster: getAllStudents() }); }));
 
 // Add new student volunteer to the roster
 app.post('/api/roster/add', route((req, res) => {
   const { firstName, lastName, clockInNow, date } = req.body;
+  if (clockInNow !== undefined && typeof clockInNow !== 'boolean') return res.status(400).json({ error: 'clockInNow must be an explicit boolean' });
   const trimmedFirst = typeof firstName === 'string' ? firstName.trim() : '';
   const trimmedLast = typeof lastName === 'string' ? lastName.trim() : '';
 
@@ -785,6 +564,7 @@ app.post('/api/roster/add', route((req, res) => {
     trimmedLast && trimmedFirst
       ? `${trimmedLast}, ${trimmedFirst}`
       : trimmedLast || trimmedFirst;
+  if (identityPolicy.ignoredCsvNames.some(name => name.toLowerCase() === formattedName.toLowerCase())) return res.status(400).json({ error: 'That name was an erroneous duplicate. Use the existing Canul, Alfredo record.' });
 
   const allStudents = getAllStudents();
   if (allStudents.some((s) => s.name.toLowerCase() === formattedName.toLowerCase())) {
@@ -813,13 +593,13 @@ app.post('/api/roster/add', route((req, res) => {
     firstName: trimmedFirst,
   };
 
-  store.customStudents = store.customStudents || [];
-  store.customStudents.push(newStudent);
+  state().customStudents = state().customStudents || [];
+  state().customStudents.push(newStudent);
 
   const dateStr = date || getTodayDateString();
   const dayRecords = initDayRecords(dateStr);
 
-  if (clockInNow && dayRecords[newStudent.id]) {
+  if (clockInNow === true && dayRecords[newStudent.id]) {
     const now = Date.now();
     const formatted = formatTime(new Date(now));
     const rec = dayRecords[newStudent.id];
@@ -834,7 +614,7 @@ app.post('/api/roster/add', route((req, res) => {
       timeFormatted: formatted,
       clientId: 'admin_panel',
     });
-    pendingRecordsToSync.push(rec);
+
     broadcast('record_updated', rec);
   }
 
@@ -850,13 +630,17 @@ app.post('/api/roster/add', route((req, res) => {
 
 // Settings
 app.get('/api/settings', route((_req, res) => {
-  res.json(store.settings);
+  res.json(state().settings);
 }));
 
 app.post('/api/settings', route((req, res) => {
-  store.settings = { ...store.settings, ...req.body };
-  broadcast('settings_updated', store.settings);
-  res.json(store.settings);
+  const allowed = ['rapidThresholdSeconds','strictMode','soundAlerts','kioskMode'];
+  for (const [key,value] of Object.entries(req.body)) {
+    if (!allowed.includes(key) || (key === 'rapidThresholdSeconds' ? typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 3600 : typeof value !== 'boolean')) return res.status(400).json({ error: 'Invalid security setting' });
+  }
+  state().settings = { ...state().settings, ...req.body };
+  broadcast('settings_updated', state().settings);
+  res.json(state().settings);
 }));
 
 // Attendance for specific date
@@ -870,7 +654,17 @@ app.get('/api/attendance', route((req, res) => {
 // Check-in endpoint
 app.post('/api/checkin', route((req, res) => {
   const { studentId, date, clientId, isAdminOverride } = req.body;
+  if (req.body.intent !== 'manual') return res.status(400).json({ error: 'An explicit manual attendance action is required' });
+  const authorizedAdmin = checkAdminAuth(req);
+  if (isAdminOverride && !authorizedAdmin) return res.status(401).json({ error: 'Admin override requires authentication' });
+  if (!authorizedAdmin && (!clientId || typeof clientId !== 'string' || clientId.length > 128)) return res.status(400).json({ error: 'A device ID is required' });
+  if (!authorizedAdmin && date && date !== getTodayDateString()) return res.status(403).json({ error: 'Only an admin may change historical attendance' });
+
+  if (!authorizedAdmin && getPacificTimeParts().hour < 15) return res.status(403).json({ error: 'Check-in opens at 3:00 PM Pacific', restrictedBefore3PM: true });
   const dateStr = date || getTodayDateString();
+  const bindingKey = `${dateStr}:${clientId}`;
+  const bound = state().deviceBindings?.[bindingKey];
+  if (!authorizedAdmin && bound && bound !== studentId) return res.status(403).json({ error: 'This device is already assigned to another student today. Ask an admin for help.', deviceReuseBlocked: true });
   const dayRecords = initDayRecords(dateStr);
 
   const record = dayRecords[studentId];
@@ -878,19 +672,20 @@ app.post('/api/checkin', route((req, res) => {
     return res.status(404).json({ error: 'Student not found in roster' });
   }
 
+  if (record.status === 'checked_in') return res.json({ success: true, record, alert: null });
   const now = Date.now();
   const nowDate = new Date(now);
   const formattedTime = formatTime(nowDate);
-  const clientKey = clientId || req.ip || 'unknown-client';
-  const previousClick = store.recentClicks[clientKey];
+  const clientKey = authorizedAdmin && isAdminOverride ? 'admin_panel' : clientId;
+  const previousClick = state().recentClicks[clientKey];
 
   let flagReason = '';
   let generatedAlert: SecurityAlert | null = null;
 
-  if (previousClick && previousClick.studentId !== studentId) {
+  if (!isAdminOverride && previousClick && previousClick.studentId !== studentId) {
     const diffSeconds = Math.round((now - previousClick.timestamp) / 1000);
 
-    if (diffSeconds <= store.settings.rapidThresholdSeconds) {
+    if (diffSeconds <= state().settings.rapidThresholdSeconds) {
       flagReason = `Rapid check-in detected (${diffSeconds}s after ${previousClick.studentName})`;
       generatedAlert = {
         id: `alert-${now}-${Math.random().toString(36).substring(2, 7)}`,
@@ -907,13 +702,13 @@ app.post('/api/checkin', route((req, res) => {
         acknowledged: false,
       };
 
-      store.alerts.unshift(generatedAlert);
-      if (store.alerts.length > 200) store.alerts.pop();
+      state().alerts.unshift(generatedAlert);
+      if (state().alerts.length > 200) state().alerts.pop();
 
-      if (store.settings.strictMode && !isAdminOverride) {
+      if (state().settings.strictMode && !isAdminOverride) {
         broadcast('security_alert', generatedAlert);
         return res.status(403).json({
-          error: `Multiple student check-in prohibited! Only one student may check in per device within ${store.settings.rapidThresholdSeconds}s. An alert has been sent to the club administrator.`,
+          error: `Multiple student check-in prohibited! Only one student may check in per device within ${state().settings.rapidThresholdSeconds}s. An alert has been sent to the club administrator.`,
           flagged: true,
           alert: generatedAlert,
         });
@@ -921,29 +716,19 @@ app.post('/api/checkin', route((req, res) => {
     }
   }
 
-  record.clockInTime = formattedTime;
-  record.clockInTimestamp = now;
-  record.status = 'checked_in';
-  record.checkedInByClientId = clientKey;
-  if (flagReason) {
-    record.isFlagged = true;
-    record.flagReason = flagReason;
-  }
-  record.history = record.history || [];
-  record.history.push({
-    action: 'check_in',
-    timestamp: now,
-    timeFormatted: formattedTime,
-    clientId: clientKey,
-  });
+  const oldestDate = new Date(now - 2 * 86400000).toISOString().slice(0,10);
+  for (const key of Object.keys(state().deviceBindings || {})) if (key.slice(0,10) < oldestDate) delete state().deviceBindings![key];
+  for (const [key, value] of Object.entries(state().recentClicks)) if (now - value.timestamp > Math.max(60, state().settings.rapidThresholdSeconds || 20) * 1000) delete state().recentClicks[key];
+  checkIn(record, now, clientKey);
+  if (flagReason) { record.isFlagged = true; record.flagReason = flagReason; }
+  if (!authorizedAdmin) (state().deviceBindings ||= {})[bindingKey] = studentId;
 
-  store.recentClicks[clientKey] = {
+  state().recentClicks[clientKey] = {
     studentId,
     studentName: record.studentName,
     timestamp: now,
   };
 
-  pendingRecordsToSync.push(record);
   broadcast('record_updated', record);
   if (generatedAlert) {
     broadcast('security_alert', generatedAlert);
@@ -959,7 +744,15 @@ app.post('/api/checkin', route((req, res) => {
 // Check-out endpoint
 app.post('/api/checkout', route((req, res) => {
   const { studentId, date, clientId, isAdminOverride } = req.body;
+  if (req.body.intent !== 'manual') return res.status(400).json({ error: 'An explicit manual attendance action is required' });
+  const authorizedAdmin = checkAdminAuth(req);
+  if (isAdminOverride && !authorizedAdmin) return res.status(401).json({ error: 'Admin override requires authentication' });
+  if (!authorizedAdmin && (!clientId || typeof clientId !== 'string' || clientId.length > 128)) return res.status(400).json({ error: 'A device ID is required' });
+  if (!authorizedAdmin && date && date !== getTodayDateString()) return res.status(403).json({ error: 'Only an admin may change historical attendance' });
+
   const dateStr = date || getTodayDateString();
+  const bound = state().deviceBindings?.[`${dateStr}:${clientId}`];
+  if (!authorizedAdmin && bound && bound !== studentId) return res.status(403).json({ error: 'This device belongs to another student today', deviceReuseBlocked: true });
   const dayRecords = initDayRecords(dateStr);
 
   const record = dayRecords[studentId];
@@ -967,6 +760,7 @@ app.post('/api/checkout', route((req, res) => {
     return res.status(404).json({ error: 'Student not found in roster' });
   }
 
+  if (record.status === 'completed') return res.json({ success: true, record });
   if (!record.clockInTimestamp && !record.clockInTime) {
     return res.status(400).json({ error: 'Student must check in before checking out' });
   }
@@ -976,24 +770,17 @@ app.post('/api/checkout', route((req, res) => {
   const formattedTime = formatTime(nowDate);
   const clientKey = clientId || req.ip || 'unknown-client';
 
-  const clockInTs = record.clockInTimestamp || getPacificTimestamp(dateStr, record.clockInTime || '03:00:00 PM');
-  const durationMs = Math.max(0, now - clockInTs);
-  const durationMinutes = Math.max(1, Math.round(durationMs / 60000));
+  if (!record.clockInTimestamp && record.clockInTime) record.clockInTimestamp = getPacificTimestamp(dateStr, record.clockInTime);
+  checkOut(record, now, authorizedAdmin && isAdminOverride ? 'admin_panel' : clientKey);
+  if (!authorizedAdmin) (state().deviceBindings ||= {})[`${dateStr}:${clientId}`] = studentId;
+  if (record.post415Exceeded) {
+    const alert: SecurityAlert = { id: `late-${now}-${studentId}`, timestamp: now, date: dateStr, timeFormatted: formattedTime,
+      type: record.cutoffExceeded ? 'LATE_CHECKOUT' : 'POST_415_CHECKOUT', severity: record.cutoffExceeded ? 'critical' : 'warning',
+      currentStudent: record.studentName, studentId, attemptedTime: formattedTime, clientId: clientKey,
+      message: record.cutoffExceeded ? 'Checkout capped at 4:45 PM Pacific; admin review required' : 'Checkout after 4:15 PM Pacific', acknowledged: false };
+    state().alerts.unshift(alert); state().alerts = state().alerts.slice(0,200); broadcast('security_alert', alert);
+  }
 
-  record.clockOutTime = formattedTime;
-  record.clockOutTimestamp = now;
-  record.durationMinutes = durationMinutes;
-  record.status = 'completed';
-  record.checkedOutByClientId = clientKey;
-  record.history = record.history || [];
-  record.history.push({
-    action: 'check_out',
-    timestamp: now,
-    timeFormatted: formattedTime,
-    clientId: clientKey,
-  });
-
-  pendingRecordsToSync.push(record);
   broadcast('record_updated', record);
 
   res.json({
@@ -1013,6 +800,7 @@ app.post('/api/reset-student', route((req, res) => {
     return res.status(404).json({ error: 'Student not found' });
   }
 
+  record.completedSessionMinutes = 0;
   record.clockInTime = null;
   record.clockInTimestamp = null;
   record.clockOutTime = null;
@@ -1031,7 +819,6 @@ app.post('/api/reset-student', route((req, res) => {
     clientId: 'admin',
   });
 
-  pendingRecordsToSync.push(record);
   broadcast('record_updated', record);
 
   res.json({ success: true, record });
@@ -1040,6 +827,11 @@ app.post('/api/reset-student', route((req, res) => {
 // Manual time & laptop adjustment (admin override)
 app.post('/api/adjust-time', route((req, res) => {
   const { studentId, date, clockInTime, clockOutTime, isFlagged, laptopsImaged } = req.body;
+  for (const value of [clockInTime, clockOutTime]) {
+    if (value !== undefined && value !== null && value !== '' && (typeof value !== 'string' || !parseTimeString(value))) return res.status(400).json({ error: 'Invalid attendance time' });
+  }
+  if ((isFlagged !== undefined && typeof isFlagged !== 'boolean') || (laptopsImaged !== undefined && (!Number.isSafeInteger(laptopsImaged) || laptopsImaged < 0 || laptopsImaged > 500))) return res.status(400).json({ error: 'Invalid record adjustment' });
+
   const dateStr = date || getTodayDateString();
   const dayRecords = initDayRecords(dateStr);
 
@@ -1048,6 +840,12 @@ app.post('/api/adjust-time', route((req, res) => {
     return res.status(404).json({ error: 'Student not found' });
   }
 
+  const nextIn = clockInTime !== undefined ? clockInTime : record.clockInTime;
+  const nextOut = clockOutTime !== undefined ? clockOutTime : record.clockOutTime;
+  if (nextOut && !nextIn) return res.status(400).json({ error: 'Checkout requires an arrival time' });
+  if (nextIn && nextOut && getPacificTimestamp(dateStr, nextOut) < getPacificTimestamp(dateStr, nextIn)) return res.status(400).json({ error: 'Checkout cannot precede arrival' });
+  record.completedSessionMinutes = 0;
+  appendHistory(record, 'admin_edit', Date.now(), 'admin_panel');
   if (clockInTime !== undefined) record.clockInTime = clockInTime || null;
   if (clockOutTime !== undefined) record.clockOutTime = clockOutTime || null;
   if (isFlagged !== undefined) record.isFlagged = isFlagged;
@@ -1074,9 +872,24 @@ app.post('/api/adjust-time', route((req, res) => {
     record.durationMinutes = null;
   }
 
-  pendingRecordsToSync.push(record);
   broadcast('record_updated', record);
   res.json({ success: true, record });
+}));
+
+app.post('/api/approve-exception', route((req, res) => {
+  const date = req.body.date || getTodayDateString();
+  const record = initDayRecords(date)[req.body.studentId];
+  const approvedTime = req.body.actualTime;
+  if (!record) return res.status(404).json({ error: 'Student not found' });
+  if (typeof approvedTime !== 'string' || !parseTimeString(approvedTime) || !record.clockInTimestamp) return res.status(400).json({ error: 'Valid checkout and existing arrival required' });
+  const timestamp = getPacificTimestamp(date, approvedTime);
+  if (timestamp < record.clockInTimestamp) return res.status(400).json({ error: 'Checkout cannot precede arrival' });
+  record.clockOutTime = approvedTime; record.clockOutTimestamp = timestamp;
+  record.durationMinutes = (record.completedSessionMinutes || 0) + Math.round((timestamp - record.clockInTimestamp) / 60000);
+  record.status = 'completed'; record.exceptionGranted = true; record.exceptionApprovedTime = approvedTime;
+  record.exceptionNote = String(req.body.notes || '').slice(0,500);
+  appendHistory(record, 'exception_grant', Date.now(), 'admin_panel');
+  broadcast('record_updated', record); res.json({ success: true, record });
 }));
 
 // Reset all attendance and laptop records across a specific date
@@ -1104,10 +917,10 @@ app.post('/api/reset-day', route((req, res) => {
       laptopLogs: [],
       history: [],
     };
-    pendingRecordsToSync.push(newDayRecords[student.id]);
+
   }
 
-  store.recordsByDate[dateStr] = newDayRecords;
+  state().recordsByDate[dateStr] = newDayRecords;
   broadcast('day_reset', { date: dateStr, records: Object.values(newDayRecords) });
   res.json({
     success: true,
@@ -1139,12 +952,13 @@ app.post('/api/reset-all-data', route((req, res) => {
       laptopLogs: [],
       history: [],
     };
-    pendingRecordsToSync.push(freshDayRecords[student.id]);
+
   }
 
-  store.recordsByDate = { [todayStr]: freshDayRecords };
-  store.alerts = [];
-  store.hasBeenReset = true;
+  state().activeGeneration = crypto.randomUUID();
+  state().recordsByDate = { [todayStr]: freshDayRecords };
+  state().alerts = [];
+  state().hasBeenReset = true;
 
   broadcast('day_reset', { date: todayStr, records: Object.values(freshDayRecords) });
   broadcast('alerts_updated', []);
@@ -1178,7 +992,9 @@ app.post('/api/laptops/update', route((req, res) => {
     newCount = Math.max(0, prevCount + delta);
   }
 
+  if (!Number.isSafeInteger(newCount) || newCount > 500) return res.status(400).json({ error: 'Laptop count must be an integer between 0 and 500' });
   record.laptopsImaged = newCount;
+  appendHistory(record, 'laptop_update', Date.now(), 'admin_panel');
   const now = Date.now();
   const formattedTime = formatTime(new Date(now));
   const clientKey = clientId || req.ip || 'terminal';
@@ -1206,7 +1022,6 @@ app.post('/api/laptops/update', route((req, res) => {
     });
   }
 
-  pendingRecordsToSync.push(record);
   broadcast('record_updated', record);
   res.json({
     success: true,
@@ -1327,7 +1142,7 @@ app.get('/api/laptops/summary', route((req, res) => {
     allTimeTotal,
     allTimeTotalClubMinutes: getTotalClubMinutesAllTime(),
     allTimeTotalClubHours: parseFloat((getTotalClubMinutesAllTime() / 60).toFixed(1)),
-    clubGoal: store.clubGoal || { targetLaptops: 2500, sessionTarget: 50 },
+    clubGoal: state().clubGoal || { targetLaptops: 2500, sessionTarget: 50 },
     activeImagersSessionCount: sessionLeaderboard.filter((s) => s.sessionLaptops > 0).length,
     totalMembersCount: allCurrentStudents.length,
     sessionLeaderboard,
@@ -1341,31 +1156,31 @@ app.get('/api/laptops/summary', route((req, res) => {
 // Laptop Goal
 app.post('/api/laptops/goal', route((req, res) => {
   const { targetLaptops, sessionTarget } = req.body;
-  store.clubGoal = store.clubGoal || { targetLaptops: 2500, sessionTarget: 50 };
-  if (typeof targetLaptops === 'number') store.clubGoal.targetLaptops = Math.max(1, targetLaptops);
-  if (typeof sessionTarget === 'number') store.clubGoal.sessionTarget = Math.max(1, sessionTarget);
-  broadcast('goal_updated', store.clubGoal);
-  res.json({ success: true, clubGoal: store.clubGoal });
+  state().clubGoal = state().clubGoal || { targetLaptops: 2500, sessionTarget: 50 };
+  if (typeof targetLaptops === 'number') state().clubGoal.targetLaptops = Math.max(1, targetLaptops);
+  if (typeof sessionTarget === 'number') state().clubGoal.sessionTarget = Math.max(1, sessionTarget);
+  broadcast('goal_updated', state().clubGoal);
+  res.json({ success: true, clubGoal: state().clubGoal });
 }));
 
 // Security Alerts endpoints
 app.get('/api/alerts', route((_req, res) => {
-  res.json({ alerts: store.alerts });
+  res.json({ alerts: state().alerts });
 }));
 
 app.post('/api/alerts/acknowledge', route((req, res) => {
   const { alertId } = req.body;
-  const alert = store.alerts.find((a) => a.id === alertId);
+  const alert = state().alerts.find((a) => a.id === alertId);
   if (alert) {
     alert.acknowledged = true;
-    broadcast('alerts_updated', store.alerts);
+    broadcast('alerts_updated', state().alerts);
   }
-  res.json({ success: true, alerts: store.alerts });
+  res.json({ success: true, alerts: state().alerts });
 }));
 
 app.post('/api/alerts/clear', route((_req, res) => {
-  store.alerts = [];
-  broadcast('alerts_updated', store.alerts);
+  state().alerts = [];
+  broadcast('alerts_updated', state().alerts);
   res.json({ success: true, alerts: [] });
 }));
 
@@ -1405,14 +1220,15 @@ app.get('/api/export-csv', route((req, res) => {
 // Automated 5:00 PM email schedule and dispatch history
 app.get('/api/email/status', route((_req, res) => {
   const todayStr = getTodayDateString();
-  const day = store.recordsByDate[todayStr] || {};
+  const day = state().recordsByDate[todayStr] || {};
   const activeCount = Object.values(day).filter(
     (r) => r.clockInTime || (r.laptopsImaged && r.laptopsImaged > 0)
   ).length;
   const completedCount = Object.values(day).filter((r) => r.status === 'completed').length;
 
   res.json({
-    schedule: '5:00 PM Pacific Every Weekday (Monday, Tuesday, Thursday, Friday - Wednesday excluded)',
+    schedule: 'Automatic email delivery is not configured. Manual spreadsheet export is available.',
+    transportConfigured: false,
     recipient: 'avasophianorgaard@gmail.com',
     todayDate: todayStr,
     todayStats: {
@@ -1421,7 +1237,7 @@ app.get('/api/email/status', route((_req, res) => {
       totalMembers: getAllStudents().length,
       csvAvailable: fs.existsSync(path.join(process.cwd(), 'sheets', `${todayStr}.csv`)),
     },
-    logs: store.emailLogs || [],
+    logs: state().emailLogs || [],
   });
 }));
 
@@ -1433,7 +1249,7 @@ app.post('/api/admin/send-email', route((req, res) => {
   const logEntry = dispatchCompletedSpreadsheetEmail(targetDate, 'admin_manual_trigger');
   res.json({
     success: true,
-    message: `Completed spreadsheet email for ${targetDate} dispatched to avasophianorgaard@gmail.com`,
+    message: `Spreadsheet for ${targetDate} generated; email delivery is not configured`,
     log: logEntry,
   });
 }));
@@ -1441,72 +1257,31 @@ app.post('/api/admin/send-email', route((req, res) => {
 // Store Dump for backup
 app.get('/api/store-dump', route((_req, res) => {
   res.json({
-    recordsByDate: store.recordsByDate,
-    customStudents: store.customStudents || [],
-    clubGoal: store.clubGoal,
-    settings: store.settings,
-    alerts: store.alerts,
-    emailLogs: store.emailLogs || [],
+    recordsByDate: state().recordsByDate,
+    customStudents: state().customStudents || [],
+    clubGoal: state().clubGoal,
+    settings: state().settings,
+    alerts: state().alerts,
+    emailLogs: state().emailLogs || [],
   });
 }));
 
-// Firebase Status & Manual Backup endpoints
+// The legacy sync button is now a read-only verification. It cannot replay stale records.
 app.get('/api/firebase/status', route((_req, res) => {
-  res.json({
-    connected: Boolean(firestoreDb),
-    databaseId: 'ai-studio-clubattendancetr-c37bf173-259d-4f35-bde4-eada4973fd7b',
-    lastSyncTimestamp: lastFirestoreSyncTimestamp,
-    lastSyncFormatted: lastFirestoreSyncTimestamp
-      ? new Date(lastFirestoreSyncTimestamp).toLocaleString('en-US', { timeZone: PACIFIC_TIMEZONE })
-      : null,
-    totalRecordsSynced: totalFirestoreSyncedCount,
-  });
+  const total = Object.values(state().recordsByDate).reduce((sum, day) => sum + Object.keys(day).length, 0);
+  res.json({ connected: storageMode === 'firestore', storage: storageMode, authoritative: storageMode === 'firestore', totalRecordsSynced: total });
 }));
-
-app.post('/api/firebase/backup-now', async (_req, res) => {
-  try {
-    const result = await backupAllToFirestore();
-    res.json({
-      success: true,
-      message: `Successfully backed up ${result.backedUp} active records to Firebase Firestore!`,
-      details: result,
-    });
-  } catch (err: any) {
-    res.status(500).json({ error: 'Firestore backup failed: ' + (err?.message || String(err)) });
-  }
-});
+app.post('/api/firebase/backup-now', route((_req, res) => {
+  if (storageMode !== 'firestore') return res.status(503).json({ error: 'Firestore is not the active storage backend' });
+  const total = Object.values(state().recordsByDate).reduce((sum, day) => sum + Object.keys(day).length, 0);
+  res.json({ success: true, count: total, message: 'Firestore read verified. Writes are committed directly; no bulk sync was performed.', details: { backedUp: total, total } });
+}));
 
 // -------------------------------------------------------------
 // Vite Server Integration & Startup
 // -------------------------------------------------------------
 async function startServer() {
-  // Sync with Firebase Firestore on boot
-  if (firestoreDb) {
-    syncFromFirestore()
-      .then(() => backupAllToFirestore())
-      .catch((err) => console.warn('[FIREBASE] Startup sync warning:', err));
-  }
-
-  // Check if today past 5 PM on target weekday and dispatch startup email if needed
-  try {
-    const bootToday = getTodayDateString();
-    const bootDayOfWeek = getPacificDayOfWeek();
-    if ([1, 2, 4, 5].includes(bootDayOfWeek)) {
-      const parts = getPacificTimeParts();
-      if (parts.hour >= 17) {
-        database.transaction((current) => {
-          store = current;
-          const already = (store.emailLogs || []).some(
-            (l) => l.dateStr === bootToday && l.status === 'sent'
-          );
-          if (!already) {
-            dispatchCompletedSpreadsheetEmail(bootToday, 'startup_dispatch');
-          }
-        });
-      }
-    }
-  } catch {}
-
+  app.use('/api', (_req, res) => { res.status(404).json({ error: 'API route not found' }); });
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -1528,6 +1303,6 @@ async function startServer() {
 
 startServer().catch((error) => {
   console.error('Server startup failed:', error);
-  database.close();
+  void database.close();
   process.exitCode = 1;
 });

@@ -1,0 +1,9 @@
+{
+  "confirmedCsvIds": {
+    "Storment, Isaac": "storment",
+    "Storment": "storment"
+  },
+  "ignoredCsvNames": ["Canuel, Alfredo"],
+  "studentIdAliases": {"storment-isaac": "storment"},
+  "note": "User confirmed there is one Isaac Storment and Canuel, Alfredo is an erroneous duplicate of the existing Canul, Alfredo. Ignore the erroneous CSV rows; never apply their absence to Canul."
+}

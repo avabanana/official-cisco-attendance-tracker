@@ -11,7 +11,7 @@ import { ResetAllDataModal } from './components/ResetAllDataModal';
 import { ToastContainer, ToastMessage } from './components/Toast';
 import { getOrCreateClientId } from './utils/clientId';
 import { playSuccessChime, playAdminAlertChime } from './utils/audio';
-import { useFirebase } from './context/FirebaseContext';
+import { attendanceMap } from './utils/attendanceState';
 
 const PACIFIC_TIMEZONE = 'America/Los_Angeles';
 
@@ -70,7 +70,12 @@ export default function App() {
   const [isResetModalOpen, setIsResetModalOpen] = useState<boolean>(false);
   const [isResetAllModalOpen, setIsResetAllModalOpen] = useState<boolean>(false);
 
-  const { syncRecordToFirestore, syncStudentToFirestore } = useFirebase();
+  const selectedDateRef = useRef(selectedDate);
+  selectedDateRef.current = selectedDate;
+  const attendanceRequest = useRef(0);
+  const pendingActions = useRef(new Set<string>());
+  const [attendanceError, setAttendanceError] = useState<string | null>(null);
+  const [attendanceReady, setAttendanceReady] = useState(false);
 
   // Automatically revoke admin session token & lock admin whenever navigating away from the admin page
   useEffect(() => {
@@ -165,72 +170,28 @@ export default function App() {
     clientIdRef.current = getOrCreateClientId();
   }, []);
 
-  // Fetch Attendance Records for selected date
-  const loadAttendance = useCallback(async (dateStr: string) => {
-    // Check if we have an instant cached copy in localStorage to avoid flashes or lost state
+  // Server-confirmed records only. No browser attendance cache, optimistic arrivals, or cross-date merging.
+  const loadAttendance = useCallback(async (dateStr: string, background = false) => {
+    const requestId = ++attendanceRequest.current;
+    if (!background) { setAttendanceReady(false); setRecordsMap({}); }
     try {
-      const cached = localStorage.getItem(`club_records_${dateStr}`);
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        if (parsed && typeof parsed === 'object') {
-          setRecordsMap((prev) => (Object.keys(prev).length === 0 ? parsed : prev));
-        }
-      }
-    } catch {}
-
-    try {
-      const res = await fetch(`/api/attendance?date=${encodeURIComponent(dateStr)}`);
-      if (res.ok) {
-        const data = await res.json();
-        const map: Record<string, AttendanceRecord> = {};
-        for (const rec of data.records) {
-          map[rec.studentId] = rec;
-        }
-
-        setRecordsMap(map);
-        try {
-          localStorage.setItem(`club_records_${dateStr}`, JSON.stringify(map));
-        } catch {}
-        setIsConnected(true);
-      }
-    } catch (err) {
-      console.warn('Failed to load attendance from server, using local fallback:', err);
-      // Initialize fallback if server is unreachable
-      setRecordsMap((prev) => {
-        if (Object.keys(prev).length > 0) return prev;
-        const initial: Record<string, AttendanceRecord> = {};
-        for (const s of roster) {
-          initial[s.id] = {
-            id: `${dateStr}_${s.id}`,
-            date: dateStr,
-            studentId: s.id,
-            studentName: s.name,
-            clockInTime: null,
-            clockInTimestamp: null,
-            clockOutTime: null,
-            clockOutTimestamp: null,
-            durationMinutes: null,
-            status: 'absent',
-            checkedInByClientId: null,
-            checkedOutByClientId: null,
-            isFlagged: false,
-            laptopsImaged: 0,
-            laptopLogs: [],
-          };
-        }
-        return initial;
-      });
+      const res = await fetch(`/api/attendance?date=${encodeURIComponent(dateStr)}`, { cache: 'no-store' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Attendance could not be loaded');
+      const map = attendanceMap(dateStr, data.records);
+      if (requestId !== attendanceRequest.current || dateStr !== selectedDateRef.current) return;
+      setRecordsMap(map);
+      setAttendanceReady(true);
+      setAttendanceError(null);
+      setIsConnected(true);
+    } catch (error: any) {
+      if (requestId !== attendanceRequest.current || dateStr !== selectedDateRef.current) return;
+      setRecordsMap({});
+      setAttendanceReady(false);
+      setAttendanceError(error.message || 'Attendance unavailable. Reload before taking attendance.');
+      setIsConnected(false);
     }
-  }, [roster]);
-
-  // Persist records to localStorage on any state change so data is never lost across reloads
-  useEffect(() => {
-    if (selectedDate && Object.keys(recordsMap).length > 0) {
-      try {
-        localStorage.setItem(`club_records_${selectedDate}`, JSON.stringify(recordsMap));
-      } catch {}
-    }
-  }, [recordsMap, selectedDate]);
+  }, []);
 
   // Fetch Laptop Progress & Leaderboard Summary
   const loadLaptopSummary = useCallback(async (dateStr: string) => {
@@ -307,6 +268,11 @@ export default function App() {
     loadAlerts();
     loadSettings();
   }, [selectedDate, loadRoster, loadAttendance, loadLaptopSummary, loadAlerts, loadSettings]);
+
+  useEffect(() => {
+    const timer = setInterval(() => { if (!pendingActions.current.size) void loadAttendance(selectedDate, true); }, 30000);
+    return () => clearInterval(timer);
+  }, [selectedDate, loadAttendance]);
 
   // Connect to SSE for real-time live events
   useEffect(() => {
@@ -446,187 +412,43 @@ export default function App() {
     };
   }, [selectedDate, addToast, loadLaptopSummary]);
 
-  // Check In Handler (Optimistic UI for ultra-responsiveness)
-  const handleCheckIn = async (studentId: string, isAdminAction: boolean = false) => {
-    const student = roster.find((s) => s.id === studentId) || CLUB_ROSTER.find((s) => s.id === studentId);
-    if (!student) return;
-
-    const isAdminCheckIn = isAdminAction || (activeTabRef.current === 'admin' && isAdminUnlockedRef.current);
-
-    // Volunteering hours cannot start before 3:00 PM Pacific Time.
-    // People cannot clock in before 3:00 PM unless an admin manually sets it or checks them in from the admin page.
-    const currentPacificHour = getPacificHour();
-    if (currentPacificHour < 15 && !isAdminCheckIn) {
-      addToast(
-        'error',
-        'Check-In Restricted (Opens at 3:00 PM)',
-        'Volunteering check-in is not permitted before 3:00 PM. If an administrator authorized your early arrival, they can check you in from the Admin Panel.'
-      );
-      return;
-    }
-
-    const now = Date.now();
-    const formattedTime = formatCurrentTime();
-    const currentClientId = isAdminCheckIn ? 'admin_panel' : (clientIdRef.current || 'client');
-
-    // Optimistic Update
-    const prevRecord = recordsMap[studentId];
-    const optimisticRecord: AttendanceRecord = {
-      ...(prevRecord || {
-        id: `${selectedDate}_${studentId}`,
-        date: selectedDate,
-        studentId,
-        studentName: student.name,
-        clockOutTime: null,
-        clockOutTimestamp: null,
-        durationMinutes: null,
-        checkedOutByClientId: null,
-        laptopsImaged: 0,
-        laptopLogs: [],
-      }),
-      clockInTime: formattedTime,
-      clockInTimestamp: now,
-      status: 'checked_in',
-      checkedInByClientId: currentClientId,
-      isFlagged: Boolean(prevRecord?.isFlagged),
-      flagReason: prevRecord?.flagReason,
-    };
-
-    setRecordsMap((prev) => ({
-      ...prev,
-      [studentId]: optimisticRecord,
-    }));
-
-    if (!isAdminCheckIn && activeTabRef.current !== 'admin') {
-      playSuccessChime();
-      addToast('success', 'Checked In!', `${student.name} at ${formattedTime}`);
-    }
-
-    setLoadingStates((prev) => ({ ...prev, [studentId]: true }));
-
+  // A deliberate button click is the only path into these mutations. Success follows the server commit.
+  const performAttendanceAction = async (studentId: string, action: 'checkin' | 'checkout', isAdminAction = false) => {
+    const date = selectedDate;
+    if (!attendanceReady || pendingActions.current.has(`${date}:${studentId}`)) return;
+    attendanceRequest.current++; // Invalidate any read started before this manual action.
+    const admin = isAdminAction || (activeTabRef.current === 'admin' && isAdminUnlockedRef.current);
+    pendingActions.current.add(`${date}:${studentId}`);
+    setLoadingStates(prev => ({ ...prev, [studentId]: true }));
     try {
-      const res = await fetch('/api/checkin', {
-        method: 'POST',
-        headers: getAdminHeaders(),
-        body: JSON.stringify({
-          studentId,
-          date: selectedDate,
-          clientId: currentClientId,
-          isAdminOverride: isAdminCheckIn,
-        }),
+      const response = await fetch(`/api/${action}`, {
+        method: 'POST', headers: getAdminHeaders(),
+        body: JSON.stringify({ studentId, date, clientId: clientIdRef.current, isAdminOverride: admin, intent: 'manual' }),
       });
-
-      const data = await res.json();
-      if (!res.ok) {
-        // Revert optimistic update
-        setRecordsMap((prev) => ({
-          ...prev,
-          [studentId]: prevRecord || {
-            id: `${selectedDate}_${studentId}`,
-            date: selectedDate,
-            studentId,
-            studentName: student.name,
-            clockInTime: null,
-            clockInTimestamp: null,
-            clockOutTime: null,
-            clockOutTimestamp: null,
-            durationMinutes: null,
-            status: 'absent',
-            checkedInByClientId: null,
-            checkedOutByClientId: null,
-            isFlagged: false,
-            laptopsImaged: 0,
-            laptopLogs: [],
-          },
-        }));
-        if (data.restrictedBefore3PM) {
-          addToast('error', 'Early Check-In Restricted', data.error);
-        } else if (data.deviceReuseBlocked) {
-          addToast('error', 'Device Limit Reached', data.error);
-        } else {
-          addToast('error', 'Check-In Error', data.error || 'Failed to check in');
-        }
-      } else if (data.record) {
-        setRecordsMap((prev) => ({
-          ...prev,
-          [studentId]: data.record,
-        }));
-        syncRecordToFirestore(data.record).catch(console.error);
+      const data = await response.json();
+      if (!response.ok || !data.record) throw new Error(data.error || 'Attendance was not saved');
+      if (selectedDateRef.current === date) {
+        attendanceMap(date, [data.record]);
+        setRecordsMap(prev => ({ ...prev, [studentId]: data.record }));
+        setAttendanceError(null);
+        if (activeTabRef.current !== 'admin') playSuccessChime();
+        addToast('success', action === 'checkin' ? 'Checked In!' : 'Clocked Out!', `${data.record.studentName} — saved`);
+        void loadLaptopSummary(date);
       }
-    } catch (err) {
-      console.warn('Network issue during check-in; retained optimistic state:', err);
+    } catch (error: any) {
+      if (selectedDateRef.current === date) {
+        setAttendanceError(`${error.message}. Reload to verify attendance before retrying.`);
+        addToast('error', 'Attendance not confirmed', error.message);
+        // A response can be lost after commit. Reload rather than inventing or replaying a check-in.
+        void loadAttendance(date);
+      }
     } finally {
-      setLoadingStates((prev) => ({ ...prev, [studentId]: false }));
+      pendingActions.current.delete(`${date}:${studentId}`);
+      setLoadingStates(prev => ({ ...prev, [studentId]: false }));
     }
   };
-
-  // Check Out Handler
-  const handleCheckOut = async (studentId: string) => {
-    const student = roster.find((s) => s.id === studentId) || CLUB_ROSTER.find((s) => s.id === studentId);
-    const existing = recordsMap[studentId];
-    if (!student || !existing) return;
-    if (!existing.clockInTimestamp && !existing.clockInTime) return;
-
-    const now = Date.now();
-    const formattedTime = formatCurrentTime();
-    const clockInTs = existing.clockInTimestamp || (now - 3600000);
-    const durationMinutes = Math.max(1, Math.round((now - clockInTs) / 60000));
-    const currentClientId = clientIdRef.current || 'client';
-    const isAdminCheckOut = isAdminUnlockedRef.current;
-
-    // Optimistic Update
-    const optimisticRecord: AttendanceRecord = {
-      ...existing,
-      clockOutTime: formattedTime,
-      clockOutTimestamp: now,
-      durationMinutes,
-      status: 'completed',
-      checkedOutByClientId: isAdminCheckOut ? 'admin_panel' : currentClientId,
-    };
-
-    setRecordsMap((prev) => ({
-      ...prev,
-      [studentId]: optimisticRecord,
-    }));
-
-    if (activeTabRef.current !== 'admin') {
-      playSuccessChime();
-      addToast(
-        'info',
-        'Clocked Out!',
-        `${student.name} at ${formattedTime} (${Math.floor(durationMinutes / 60)}h ${durationMinutes % 60}m)`
-      );
-    }
-
-    setLoadingStates((prev) => ({ ...prev, [studentId]: true }));
-
-    try {
-      const res = await fetch('/api/checkout', {
-        method: 'POST',
-        headers: getAdminHeaders(),
-        body: JSON.stringify({
-          studentId,
-          date: selectedDate,
-          clientId: currentClientId,
-          isAdminOverride: isAdminCheckOut,
-        }),
-      });
-
-      const data = await res.json();
-      if (res.ok && data.record) {
-        setRecordsMap((prev) => ({
-          ...prev,
-          [studentId]: data.record,
-        }));
-        syncRecordToFirestore(data.record).catch(console.error);
-        loadLaptopSummary(selectedDate);
-      }
-    } catch (err) {
-      console.warn('Network issue during check-out; retained optimistic state:', err);
-    } finally {
-      setLoadingStates((prev) => ({ ...prev, [studentId]: false }));
-    }
-  };
+  const handleCheckIn = (studentId: string, isAdminAction = false) => performAttendanceAction(studentId, 'checkin', isAdminAction);
+  const handleCheckOut = (studentId: string) => performAttendanceAction(studentId, 'checkout');
 
   // Handler to approve 4:45 PM volunteering cut-off exception
   const handleApproveCutoffException = async (params: {
@@ -656,7 +478,7 @@ export default function App() {
           ...prev,
           [params.studentId]: data.record,
         }));
-        syncRecordToFirestore(data.record).catch(console.error);
+
       }
 
       addToast(
@@ -694,19 +516,6 @@ export default function App() {
       nextCount = Math.max(0, currentCount + delta);
     }
 
-    // Optimistic record update
-    setRecordsMap((old) => {
-      const existing = old[studentId] || prev;
-      if (!existing) return old;
-      return {
-        ...old,
-        [studentId]: {
-          ...existing,
-          laptopsImaged: nextCount,
-        },
-      };
-    });
-
     try {
       const res = await fetch('/api/laptops/update', {
         method: 'POST',
@@ -728,7 +537,7 @@ export default function App() {
             ...old,
             [studentId]: data.record,
           }));
-          syncRecordToFirestore(data.record).catch(console.error);
+
         }
         if (data.allTimeLaptops !== undefined) {
           setAllTimeCounts((old) => ({
@@ -750,10 +559,12 @@ export default function App() {
         loadLaptopSummary(selectedDate);
       } else {
         const errData = await res.json();
+        setAttendanceError(errData.error || 'Laptop update was not saved');
         addToast('error', 'Error', errData.error || 'Failed to update laptops');
       }
     } catch (err) {
-      console.warn('Network issue during laptop update:', err);
+      setAttendanceError('Laptop update was not confirmed. Reload to verify before retrying.');
+      void loadAttendance(selectedDate);
     }
   };
 
@@ -819,7 +630,7 @@ export default function App() {
           ...prev,
           [updatedData.studentId]: data.record,
         }));
-        syncRecordToFirestore(data.record).catch(console.error);
+
         addToast('success', 'Saved', 'Record updated successfully');
         loadLaptopSummary(selectedDate);
       }
@@ -828,50 +639,23 @@ export default function App() {
     }
   };
 
-  // Admin Update Settings
+  const saveAdminMutation = async (endpoint: string, body: unknown = {}) => {
+    const response = await fetch(endpoint, { method: 'POST', headers: getAdminHeaders(), body: JSON.stringify(body) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Save was not confirmed');
+    return data;
+  };
   const handleUpdateSettings = async (newSettings: Partial<SecuritySettings>) => {
-    const updated = { ...settings, ...newSettings };
-    setSettings(updated);
-    try {
-      await fetch('/api/settings', {
-        method: 'POST',
-        headers: getAdminHeaders(),
-        body: JSON.stringify(newSettings),
-      });
-      addToast('success', 'Settings Updated', 'Anti-proxy rules saved');
-    } catch {
-      // Graceful silence
-    }
+    try { setSettings(await saveAdminMutation('/api/settings', newSettings)); }
+    catch (error: any) { setAttendanceError(error.message); }
   };
-
-  // Admin Acknowledge Alert
   const handleAcknowledgeAlert = async (alertId: string) => {
-    setAlerts((prev) =>
-      prev.map((a) => (a.id === alertId ? { ...a, acknowledged: true } : a))
-    );
-    try {
-      await fetch('/api/alerts/acknowledge', {
-        method: 'POST',
-        headers: getAdminHeaders(),
-        body: JSON.stringify({ alertId }),
-      });
-    } catch {
-      // Graceful silence
-    }
+    try { const data = await saveAdminMutation('/api/alerts/acknowledge', { alertId }); setAlerts(data.alerts); }
+    catch (error: any) { setAttendanceError(error.message); }
   };
-
-  // Admin Clear Alerts
   const handleClearAlerts = async () => {
-    setAlerts([]);
-    try {
-      await fetch('/api/alerts/clear', {
-        method: 'POST',
-        headers: getAdminHeaders(),
-      });
-      addToast('info', 'Alerts Cleared', 'Security history cleared');
-    } catch {
-      // Graceful silence
-    }
+    try { const data = await saveAdminMutation('/api/alerts/clear'); setAlerts(data.alerts); }
+    catch (error: any) { setAttendanceError(error.message); }
   };
 
   // Simulate Test Alert (for leadership to verify exception functionality easily)
@@ -975,9 +759,6 @@ export default function App() {
       if (Array.isArray(data.roster)) {
         setRoster(data.roster);
       }
-      if (data.student) {
-        syncStudentToFirestore(data.student).catch(console.error);
-      }
       await loadAttendance(selectedDate);
       await loadLaptopSummary(selectedDate);
       addToast(
@@ -1020,14 +801,15 @@ export default function App() {
       />
 
       {/* Main Content Area */}
+      {attendanceError && <div role="alert" className="bg-red-50 border border-red-300 text-red-900 p-4">{attendanceError} <button onClick={() => loadAttendance(selectedDate)}>Reload attendance</button></div>}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
         {activeTab === 'checkin' ? (
           <MemberCheckInView
             roster={roster}
-            recordsMap={recordsMap}
+            recordsMap={Object.fromEntries((Object.entries(recordsMap) as [string, AttendanceRecord][]).filter(([, r]) => r.date === selectedDate))}
             onCheckIn={handleCheckIn}
             onCheckOut={handleCheckOut}
-            loadingStates={loadingStates}
+            loadingStates={Object.fromEntries(roster.map(s => [s.id, !attendanceReady || !!loadingStates[s.id]]))}
             selectedDate={selectedDate}
             allTimeCounts={allTimeCounts}
             summary={summary}
@@ -1036,7 +818,7 @@ export default function App() {
         ) : activeTab === 'laptops' ? (
           <LaptopLeaderboardView
             roster={roster}
-            recordsMap={recordsMap}
+            recordsMap={Object.fromEntries((Object.entries(recordsMap) as [string, AttendanceRecord][]).filter(([, r]) => r.date === selectedDate))}
             summary={summary}
             selectedDate={selectedDate}
             onUpdateGoal={handleUpdateGoal}
@@ -1051,7 +833,7 @@ export default function App() {
         ) : (
           <AdminDashboard
             roster={roster}
-            recordsMap={recordsMap}
+            recordsMap={Object.fromEntries((Object.entries(recordsMap) as [string, AttendanceRecord][]).filter(([, r]) => r.date === selectedDate))}
             alerts={alerts}
             settings={settings}
             onUpdateSettings={handleUpdateSettings}
@@ -1060,7 +842,7 @@ export default function App() {
             onResetStudent={handleResetStudent}
             onCheckIn={(studentId) => handleCheckIn(studentId, true)}
             onCheckOut={handleCheckOut}
-            loadingStates={loadingStates}
+            loadingStates={Object.fromEntries(roster.map(s => [s.id, !attendanceReady || !!loadingStates[s.id]]))}
             onAdjustRecord={handleAdjustRecord}
             onSimulateTestAlert={handleSimulateTestAlert}
             selectedDate={selectedDate}
@@ -1073,6 +855,7 @@ export default function App() {
             onResetAllDataClick={() => setIsResetAllModalOpen(true)}
             onApproveCutoffException={handleApproveCutoffException}
             onAddVolunteer={handleAddVolunteer}
+            getAdminHeaders={getAdminHeaders}
           />
         )}
       </main>

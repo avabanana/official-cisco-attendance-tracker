@@ -135,13 +135,14 @@ read-only date loads, and archived reset generations. Ordinary `npm test`
 explicitly reports it skipped when the emulator is absent. A skipped emulator
 suite does not validate Firebase or deployed rules.
 
-In this development environment, local validation passed, but the network proxy
-blocked both Firebase access and the official emulator artifact download. The
-available local Google credential file was also unusable as an ADC identity.
-Live retention, emulator behavior, deployed rules, and live CSV alignment remain
-**unverified** until those checks can run. No deployment, live import, or live
-attendance overwrite was performed. Do not merge/deploy this branch as ready
-until those required checks are completed.
+Local validation and the real Firestore emulator suite passed after the Google
+network settings were activated. A user-authorized Cloud Shell export also
+succeeded. This Codex workspace itself has no Google server credentials.
+The live export revealed a noncanonical test document and missing historical
+history/log fields; data reconciliation remains subject to identity review,
+fresh conflict checks, and explicit approval. No deployment, live import, or
+live attendance overwrite was performed during these checks.
+
 
 The historical email button generates an export and a pending dispatch log;
 there is no configured email transport in this source. It does not claim that
@@ -159,3 +160,7 @@ ID in `rawRecords`. Invalid/mismatched identities are also listed in
 a valid record with a legacy alias. Archived generations remain in the raw
 export. CSV plans flag these unresolved documents and refuse application until
 the identity issues have been reviewed and a new plan generated.
+
+CSV comparison treats leading-zero time formatting as equivalent and preserves
+existing millisecond event timestamps when the CSV represents the same second.
+It never truncates genuine event precision merely to reproduce export formatting.

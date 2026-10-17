@@ -65,6 +65,19 @@ def main():
                   'clockOutTimestamp':endts,'durationMinutes':minutes,'laptopsImaged':laptops,
                   'isFlagged':(row.get('Flagged Proxy Alert') or row.get('Flagged') or '').upper().startswith('YES'),
                   'flagReason':(row.get('Flag Reason') or '').strip() or None}
+                # CSV exports round timestamps to seconds and vary leading-zero formatting.
+                # Preserve equivalent source values rather than rewriting real event precision.
+                if before:
+                    for time_key, stamp_key in [('clockInTime','clockInTimestamp'),('clockOutTime','clockOutTimestamp')]:
+                        incoming=values[stamp_key]
+                        old_stamp=before.get(stamp_key)
+                        if incoming is not None and isinstance(old_stamp,(int,float)) and int(old_stamp//1000)==incoming//1000:
+                            values[stamp_key]=old_stamp
+                        try:
+                            if timestamp(date,before.get(time_key))==incoming:
+                                values[time_key]=before.get(time_key)
+                        except (ValueError,TypeError):
+                            pass
                 stats['attended']+=status!='absent'
                 changed=[field for field in FIELDS if (before or {}).get(field)!=values[field]]
                 # A missing absent/zero row is an implicit absence, not a record needing creation.
@@ -87,8 +100,8 @@ def main():
        'Apply requires review, explicit plan hash approval, fresh per-record conflict checks, and transactional backups.']}
     out=pathlib.Path(args.out);out.mkdir(parents=True,exist_ok=True)
     target=out/'correction-plan.json';target.write_text(json.dumps(plan,ensure_ascii=False,indent=2)+'\n');target.chmod(0o600)
-    lines=['# Attendance reconciliation review','',f'Baseline: **{args.baseline}**. This is not a claim about live Firebase data.','',
-      '| Date | CSV rows | Attended | Differences | Unmatched | Invalid | Correction policy |','|---|---:|---:|---:|---:|---:|---|']
+    lines=['# Attendance reconciliation review','',f'Baseline: **{args.baseline}**. Comparison reflects the exported snapshot, not subsequent live changes.','',
+      '| Date | CSV rows | Valid matched attendees | Differences | Unmatched | Invalid | Correction policy |','|---|---:|---:|---:|---:|---:|---|']
     for s in report:lines.append(f"| {s['date']} | {s['rows']} | {s['attended']} | {s['changed']} | {s['unmatched']} | {s['invalid']} | {'Review only: inaccurate source' if s['uncertain'] else 'Proposed corrections'} |")
     lines+=['',f"Live documents requiring identity review: **{len(snapshot.get('quarantinedRecords',[]))}**. No correction plan may be applied until these are resolved.",'',f'Proposed record corrections: **{len(changes)}**. Unresolved rows: **{len(issues)}**.','']+plan['notes']
     lines+=['','The October 12 filename says “missing 10-13”; it supplies evidence for October 12 only.','',f'Plan file SHA-256: `{hashlib.sha256(target.read_bytes()).hexdigest()}`']

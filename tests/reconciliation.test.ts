@@ -24,3 +24,20 @@ test('CSV planning is read-only, quarantines inaccurate input, retains history, 
   assert.deepEqual(plan.changes[0].after.history,history);assert.equal(plan.changes[0].after.laptopsImaged,2);
   assert.equal(fs.readFileSync(source,'utf8'),bytes);
 });
+
+test('CSV comparison preserves equivalent time formatting and real millisecond precision',t=>{
+  const folder=fs.mkdtempSync(path.join(os.tmpdir(),'reconcile-time-test-'));
+  t.after(()=>fs.rmSync(folder,{recursive:true,force:true}));
+  const input=path.join(folder,'input');fs.mkdirSync(input);
+  fs.writeFileSync(path.join(input,'attendance_2026-10-15.csv'),
+    'Student Name,Status,Clock In Time,Clock Out Time,Duration,Laptops Imaged (Session),Flagged Proxy Alert,Flag Reason\n'+
+    '"Person, Test",Clocked Out (Completed),3:00:00 PM,4:00:00 PM,1.00 hrs,2,No,\n');
+  const record={id:'2026-10-15_test-person',date:'2026-10-15',studentId:'test-person',studentName:'Person, Test',status:'completed',
+    clockInTime:'03:00:00 PM',clockOutTime:'04:00:00 PM',clockInTimestamp:Date.parse('2026-10-15T22:00:00Z')+584,
+    clockOutTimestamp:Date.parse('2026-10-15T23:00:00Z')+18,durationMinutes:60,laptopsImaged:2,isFlagged:false,flagReason:null};
+  const source=path.join(folder,'baseline.json');fs.writeFileSync(source,JSON.stringify({recordsByDate:{'2026-10-15':{'test-person':record}}}));
+  const result=spawnSync('python3',['scripts/reconcile-attendance.py','--csv-dir',input,'--snapshot',source,'--out',path.join(folder,'out')]);
+  assert.equal(result.status,0,result.stderr.toString());
+  const plan=JSON.parse(fs.readFileSync(path.join(folder,'out/correction-plan.json'),'utf8'));
+  assert.equal(plan.changes.length,0);
+});

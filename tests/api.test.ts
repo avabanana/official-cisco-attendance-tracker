@@ -45,6 +45,10 @@ test('API history, settings, strict security, SSE, rollback, and restart persist
   };
   await start();
   const { roster } = await get('/api/roster');
+  assert.equal(roster.filter((s: any) => s.id === 'amrit-samra').length, 1);
+  assert.deepEqual(roster.find((s: any) => s.id === 'amrit-samra'), {
+    id: 'amrit-samra', name: 'Amrit, Samra', firstName: 'Samra', lastName: 'Amrit',
+  });
   const first = roster[0].id, second = roster[1].id;
   const date = '2026-01-02';
   const invalidSettings = await post('/api/settings', { rapidThresholdSeconds: -1 });
@@ -52,6 +56,7 @@ test('API history, settings, strict security, SSE, rollback, and restart persist
   const unauthorized = await fetch(url + '/api/checkin', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({studentId:first,date,clientId:'device',intent:'manual',isAdminOverride:true})});
   assert.equal(unauthorized.status,401);
   const initial = await get('/api/attendance?date=' + date);
+  assert.equal(initial.records.find((r: any) => r.studentId === 'amrit-samra').status, 'absent');
   assert.equal(initial.records.length, roster.length);
   assert.equal((await post('/api/checkout', { studentId: first, date })).status, 400);
   assert.equal((await post('/api/checkin', { studentId: 'missing', date })).status, 404);

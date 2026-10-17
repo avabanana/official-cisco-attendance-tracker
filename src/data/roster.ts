@@ -21,6 +21,12 @@ export const CLUB_ROSTER: Student[] = [
     "firstName": "Ansh"
   },
   {
+    "id": "amrit-samra",
+    "name": "Amrit, Samra",
+    "lastName": "Amrit",
+    "firstName": "Samra"
+  },
+  {
     "id": "anderson-smith-anna",
     "name": "Anderson-Smith, Anna",
     "lastName": "Anderson-Smith",

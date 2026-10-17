@@ -89,5 +89,19 @@ test('Firestore emulator: committed history, concurrent writers, failed transact
   assert.equal((await db.doc(`attendance_records/${canonical.id}`).get()).data()!.laptopsImaged,3);
   assert.equal((await applyIdentityRepairs(db,repairs,true)).merged,0);
   await assert.rejects(applyIdentityRepairs(db,[{...repairs[0],source:{...alias,laptopsImaged:4}}],true),/changed since export/);
+  const {emptyTestRepair,archiveEmptyTest}=await import('../scripts/archive-empty-test-record.ts');
+  const confirmedCanonical=(await db.doc(`attendance_records/${canonical.id}`).get()).data()!;
+  const emptyAlias={...canonical,id:'test-rec-1'};
+  await db.doc('attendance_records/test-rec-1').set(emptyAlias);
+  const cleanup=emptyTestRepair({rawRecords:[{documentId:'test-rec-1',data:emptyAlias}],recordsByDate:{[identityDate]:{storment:confirmedCanonical}}});
+  assert.equal((await archiveEmptyTest(db,cleanup,false)).archived,0);
+  assert.equal((await db.doc('attendance_records/test-rec-1').get()).exists,true);
+  assert.equal((await archiveEmptyTest(db,cleanup,true)).archived,1);
+  assert.equal((await db.doc('attendance_records/test-rec-1').get()).exists,false);
+  assert.deepEqual((await db.doc(`attendance_records/${canonical.id}`).get()).data(),confirmedCanonical);
+  assert.equal((await db.collection('attendance_test_archives').get()).size,1);
+  assert.equal((await archiveEmptyTest(db,cleanup,true)).alreadyArchived,true);
+  await persistence.transaction(null,store=>assert.ok(store.recordsByDate[identityDate].storment),false);
+
 
 });

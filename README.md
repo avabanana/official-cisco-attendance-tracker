@@ -193,3 +193,20 @@ rerun. It does not apply CSV corrections, remove test data, or deploy the app.
 The supplied live snapshot contains no Canuel roster/attendance document to
 delete. Keep Canul's legitimate attendance intact. A fresh export after the
 repair is needed to prepare the remaining data corrections.
+
+### Empty test-document cleanup (separate approval required)
+
+After reviewing the live snapshot, `test-rec-1` can be archived and removed only
+if it remains absent, empty, unflagged, and has a matching canonical attendance
+record. The canonical record is never written by this operation. A dry run is:
+
+```sh
+npx tsx scripts/archive-empty-test-record.ts ../attendance-snapshot-after-identity-v2.json
+```
+
+Only after explicit approval of this specific cleanup, add
+`--archive-approved-empty-test`. The tool verifies both live hashes, archives
+the original with a reference copy of the canonical record atomically, and then
+deletes only the test alias. A recreated alias or changed attendance record
+requires fresh review. No historical CSV corrections, other test records, or
+application deployments are included.

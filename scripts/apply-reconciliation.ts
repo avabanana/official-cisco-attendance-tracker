@@ -12,6 +12,8 @@ export function digest(value: unknown) { return crypto.createHash('sha256').upda
 export async function reconcile(db: ReturnType<typeof firebaseDatabase>, plan: any, planHash: string, apply: boolean) {
   if (plan.quarantinedDocuments > 0) throw new Error('Resolve quarantined document identities and regenerate the plan before applying any corrections');
   if (plan.version !== 1 || !Array.isArray(plan.changes)) throw new Error('Unsupported correction plan');
+  const absentIds = plan.requiredAbsentAttendanceIds ?? [];
+  if (!Array.isArray(absentIds) || absentIds.length > 20 || absentIds.some(id => typeof id !== 'string' || !/^[a-zA-Z0-9_-]{1,128}$/.test(id))) throw new Error('Invalid absent-document guard');
   const groups = new Map<string, any[]>();
   const ids = new Set<string>();
   for (const change of plan.changes) {
@@ -27,7 +29,8 @@ export async function reconcile(db: ReturnType<typeof firebaseDatabase>, plan: a
   for (const [date, changes] of groups) {
     if (changes.length > 150) throw new Error('Date exceeds safe transaction limit');
     corrected += await db.runTransaction(async transaction => {
-      const [metadata, ...documents] = await transaction.getAll(db.doc('attendance_internal/state'), ...changes.map(c => db.doc(`attendance_records/${c.id}`)));
+      const [metadata, ...documents] = await transaction.getAll(db.doc('attendance_internal/state'), ...changes.map(c => db.doc(`attendance_records/${c.id}`)), ...absentIds.map(id => db.doc(`attendance_records/${id}`)));
+      if (documents.slice(changes.length).some(document => document.exists)) throw new Error('Previously removed test document is present again; stop and review before applying corrections');
       const generation = metadata.data()?.activeGeneration;
       const auditRefs = changes.map(c => db.doc(`attendance_reconciliations/${planHash}/records/${c.id}`));
       const audits = await transaction.getAll(...auditRefs);

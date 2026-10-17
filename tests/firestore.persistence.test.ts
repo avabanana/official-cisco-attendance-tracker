@@ -102,6 +102,14 @@ test('Firestore emulator: committed history, concurrent writers, failed transact
   assert.equal((await db.collection('attendance_test_archives').get()).size,1);
   assert.equal((await archiveEmptyTest(db,cleanup,true)).alreadyArchived,true);
   await persistence.transaction(null,store=>assert.ok(store.recordsByDate[identityDate].storment),false);
+  const guardBefore=(await db.doc(`attendance_records/${canonical.id}`).get()).data()!;
+  const guardedPlan={version:1,requiredAbsentAttendanceIds:['test-rec-1'],changes:[{date:identityDate,studentId:'storment',id:canonical.id,
+    source:'attendance_2026-10-13.csv',sourceSha256:'test-source',row:2,before:guardBefore,beforeSha256:digest(guardBefore),after:{...guardBefore,laptopsImaged:4}}]};
+  assert.equal((await reconcile(db,guardedPlan,'absent-guard-dry-run',false)).corrected,0);
+  await db.doc('attendance_records/test-rec-1').set(emptyAlias);
+  await assert.rejects(reconcile(db,guardedPlan,'absent-guard-block',true),/present again/);
+  assert.deepEqual((await db.doc(`attendance_records/${canonical.id}`).get()).data(),guardBefore);
+
 
 
 });
